@@ -1,0 +1,13 @@
+// Vendored from XTLS/Xray-core common/serial/typed_message.proto (WINGS-N fork).
+// Reduced on purpose: the agent needs the wire contract, not the whole core as a
+// Go dependency, which would multiply the binary every donated node downloads
+syntax = "proto3";
+
+package xray.common.serial;
+
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+
+message TypedMessage {
+  string type = 1;
+  bytes value = 2;
+}

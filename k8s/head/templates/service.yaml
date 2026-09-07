@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "head.name" . }}
+  namespace: {{ include "head.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "head.name" . }}
+{{- if gt (int .Values.replicas) 1 }}
+    # Метку ставит себе та голова, которая держит лизу: резерв остаётся вне
+    # Service, но проходит readiness, иначе выкат не досчитается готовых реплик
+    wingsv.role: active
+{{- end }}
+  ports:
+    # Panel only. Never expose it: it is the operator's view of the federation.
+    - name: panel
+      port: {{ .Values.head.panelPort }}
+      targetPort: panel
+    - name: sub
+      port: {{ .Values.head.subPort }}
+      targetPort: sub
+    - name: provision
+      port: {{ .Values.head.provisionPort }}
+      targetPort: provision
+{{- if .Values.head.probeSecret }}
+    - name: probe
+      port: {{ .Values.head.probePort }}
+      targetPort: probe
+{{- end }}
+{{- if not .Values.agentService.enabled }}
+    - name: agent
+      port: {{ .Values.head.agentPort }}
+      targetPort: agent
+{{- end }}
+{{- if .Values.agentService.enabled }}
+---
+# The agent channel gets a service of its own because it is the one port that
+# must be reachable from outside the cluster, and it cannot go through an HTTP
+# ingress: the transport is tokenaead, raw AES-GCM with no TLS and therefore no
+# SNI for a proxy to route on. A NodePort is the honest way to publish it - the
+# alternative is a dedicated TCP entrypoint on the shared ingress, which is a
+# cluster-wide change for one service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "head.name" . }}-agent
+  namespace: {{ include "head.namespace" . }}
+spec:
+  type: {{ .Values.agentService.type }}
+  selector:
+    app: {{ include "head.name" . }}
+{{- if gt (int .Values.replicas) 1 }}
+    wingsv.role: active
+{{- end }}
+  ports:
+    - name: agent
+      port: {{ .Values.head.agentPort }}
+      targetPort: agent
+{{- if and (eq .Values.agentService.type "NodePort") .Values.agentService.nodePort }}
+      # Pinned rather than allocated: it is baked into every enrolled node's
+      # identity, so it must survive a reinstall of this chart.
+      nodePort: {{ .Values.agentService.nodePort }}
+{{- end }}
+{{- end }}
+{{- if .Values.probeService.enabled }}
+---
+# Дверь для зондов наружу. Отдельным сервисом, потому что ключ у неё свой:
+# зонд идёт к башке через ноду, а нода со флотским секретом читала бы его
+# отчёты как свои и правила бы их как хотела.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "head.name" . }}-probe
+  namespace: {{ include "head.namespace" . }}
+spec:
+  type: {{ .Values.probeService.type }}
+  selector:
+    app: {{ include "head.name" . }}
+{{- if gt (int .Values.replicas) 1 }}
+    wingsv.role: active
+{{- end }}
+  ports:
+    - name: probe
+      port: {{ .Values.head.probePort }}
+      targetPort: probe
+{{- if and (eq .Values.probeService.type "NodePort") .Values.probeService.nodePort }}
+      nodePort: {{ .Values.probeService.nodePort }}
+{{- end }}
+{{- end }}

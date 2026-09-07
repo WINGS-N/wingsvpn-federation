@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "probe.name" . }}
+  namespace: {{ include "probe.namespace" . }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "probe.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "probe.name" . }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: probe
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - probe
+            - -head
+            - {{ required "probe.head.endpoint is required" .Values.probe.head.endpoint | quote }}
+            - -id
+            - {{ required "probe.id is required: reports are filed against it" .Values.probe.id | quote }}
+{{- range .Values.probe.relays }}
+            # Путь через ноду, заданный руками: узнать ноды из задания можно
+            # только по сессии, а её может не быть вовсе
+            - -relay
+            - {{ . | quote }}
+{{- end }}
+{{- if .Values.probe.relayPort }}
+            # Запасной путь: адрес башки из страны закрывают, а ноды доступны -
+            # через них зонд и дозванивается
+            - -relay-port
+            - {{ .Values.probe.relayPort | quote }}
+{{- end }}
+{{- if .Values.probe.region }}
+            - -region
+            - {{ .Values.probe.region | quote }}
+{{- end }}
+{{- if .Values.probe.isp }}
+            - -isp
+            - {{ .Values.probe.isp | quote }}
+{{- end }}
+{{- if .Values.probe.asn }}
+            - -asn
+            - {{ .Values.probe.asn | quote }}
+{{- end }}
+            - -bin-dir
+            - /var/lib/wings/federation/bin
+            - -work-dir
+            - /var/lib/wings/federation/probe
+            - -socks-port
+            - {{ .Values.probe.socksPort | quote }}
+{{- if .Values.probe.xrayURL }}
+            - -xray-url
+            - {{ .Values.probe.xrayURL | quote }}
+{{- end }}
+{{- if .Values.probe.xraySHA512 }}
+            - -xray-sha512
+            - {{ .Values.probe.xraySHA512 | quote }}
+{{- end }}
+          env:
+            - name: WINGSV_FED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.existingSecret }}{{ .Values.existingSecret }}{{ else }}{{ include "probe.name" . }}-secrets{{ end }}
+                  key: FLEET_SECRET
+          volumeMounts:
+            - name: work
+              mountPath: /var/lib/wings/federation
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+        # Scratch only: the Xray build and the rendered per-measurement configs.
+        # Losing it costs one re-download, so there is nothing here worth a volume.
+        - name: work
+          emptyDir: {}
+{{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}

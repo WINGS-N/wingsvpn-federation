@@ -1,0 +1,35 @@
+# Донорская нода одним файлом. Заполни .env рядом (WINGSV_FED_HEAD,
+# WINGSV_FED_ENROLL_TOKEN, WINGSV_FED_BUDGET_GB) и подними:
+#
+#   docker compose up -d
+#
+# Агент зачисляется сам при первом старте и больше никогда: как только на томе
+# появилась личность, токен не читается вообще. Поэтому перезапуск контейнера
+# не плодит ноду-дубликат и не жжёт второй токен.
+services:
+  agent:
+    image: ghcr.io/wings-n/wingsvpn-federation:latest
+    command: ["agent"]
+    restart: unless-stopped
+    # Хостовая сеть - условие, а не тюнинг. Агент поднимает WireGuard-интерфейс
+    # и слушает 443; за bridge голова проверяла бы адрес, который тебе не
+    # принадлежит, а SNAT ломает учёт адресов на профиль.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+    environment:
+      WINGSV_FED_HEAD: "${WINGSV_FED_HEAD:?head endpoint required}"
+      WINGSV_FED_ENROLL_TOKEN: "${WINGSV_FED_ENROLL_TOKEN:?enroll token required}"
+      WINGSV_FED_BUDGET_GB: "${WINGSV_FED_BUDGET_GB:?monthly budget in GiB required}"
+      WINGSV_FED_STATE: /var/lib/wings/federation/node.toml
+      WINGSV_FED_BIN_DIR: /var/lib/wings/federation/bin
+      WINGSV_FED_CONFIG_DIR: /var/lib/wings/federation
+      WINGSV_FED_STATE_DIR: /var/lib/wings/federation
+    volumes:
+      # Тут лежит личность ноды. Потеряешь том - нода вернётся чужой, а токен
+      # уже сожжён.
+      - state:/var/lib/wings/federation
+
+volumes:
+  state:

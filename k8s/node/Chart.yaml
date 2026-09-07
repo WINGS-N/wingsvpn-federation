@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wingsv-fed-node
+description: Нода федерации WINGS V - агент, Xray под ним и релей vk-turn-proxy
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

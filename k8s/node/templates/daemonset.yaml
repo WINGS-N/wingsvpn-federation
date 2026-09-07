@@ -1,0 +1,251 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "node.name" . }}
+  namespace: {{ include "node.namespace" . }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "node.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "node.name" . }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      # One per host, and it has to be one: two agents on a host would fight over
+      # 443 and 8443, and the second would simply fail to listen.
+      hostNetwork: {{ .Values.hostNetwork }}
+{{- if .Values.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+{{- end }}
+      terminationGracePeriodSeconds: 30
+{{- if .Values.kernelModuleCheck }}
+      initContainers:
+        # Loudly, before anything starts. A relay that comes up without kernel
+        # WireGuard serves nothing while every health check stays green.
+        - name: kernel-wg-check
+          image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # The host's module list is mounted outside /proc on purpose: runc
+              # refuses to mount a file into the container's own /proc, and the
+              # pod fails to start rather than skipping the check.
+              if [ ! -d /sys/module/wireguard ] && ! grep -qw wireguard /host-proc-modules; then
+                echo "this host has no wireguard kernel module; load it or set kernelModuleCheck=false" >&2
+                exit 1
+              fi
+              echo "wireguard kernel module present"
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: proc-modules
+              mountPath: /host-proc-modules
+              readOnly: true
+{{- end }}
+      containers:
+        - name: agent
+          image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          securityContext:
+{{ include "node.securityContext" . | indent 12 }}
+          # No shell wrapper: the agent enrols itself when it finds no identity
+          # and then runs, so this is one process and one command.
+          #
+          # Nothing secret appears in args. Kubernetes expands $(VAR) straight
+          # into the command line, and that line is readable in the host's
+          # process list, so every credential arrives as an environment variable
+          # instead - the binary reads WINGSV_FED_<FLAG> for any flag.
+          command:
+            - wingsv-fed
+            - agent
+          args:
+            - -state
+            - /var/lib/wings/federation/node.toml
+            - -bin-dir
+            - /var/lib/wings/federation/bin
+            - -config-dir
+            - /var/lib/wings/federation
+            - -state-dir
+            - /var/lib/wings/federation
+            - -budget-gb
+            - {{ .Values.enroll.budgetGB | quote }}
+{{- with .Values.enroll.ports }}
+            - -ports
+            - {{ join "," . | quote }}
+{{- end }}
+{{- if .Values.behindProxy.enabled }}
+            - -behind-proxy
+            - -public-port
+            - "443"
+            - -ports
+            - {{ printf "%d,%d" (int .Values.behindProxy.localPort) (add (int .Values.behindProxy.localPort) 1) | quote }}
+{{- end }}
+{{- with .Values.enroll.excludePorts }}
+            - -exclude-ports
+            - {{ join "," . | quote }}
+{{- end }}
+{{- if .Values.enroll.address }}
+            - -address
+            - {{ .Values.enroll.address | quote }}
+{{- end }}
+{{- if .Values.probeRelay.enabled }}
+            # Труба для зондов: башку закрывают, а нода доступна по определению.
+            # Байты идут насквозь, читать их нода не может - у зонда свой ключ
+            - -probe-relay-listen
+            - {{ printf "0.0.0.0:%d" (int .Values.probeRelay.port) | quote }}
+{{- if .Values.probeRelay.head }}
+            - -probe-relay-head
+            - {{ .Values.probeRelay.head | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.enroll.asn }}
+            - -asn
+            - {{ .Values.enroll.asn | quote }}
+{{- end }}
+{{- if .Values.enroll.country }}
+            - -country
+            - {{ .Values.enroll.country | quote }}
+{{- end }}
+{{- if .Values.relay.enabled }}
+            - -relay-grpc
+            - {{ .Values.relay.grpcListen | quote }}
+{{- if .Values.relay.kernelWG.enabled }}
+            # Тот же интерфейс, что терминирует релей: на нём агент режет
+            # скорость пирам и снимает домены. Своего учёта у релея нет
+            - -wg-interface
+            - {{ .Values.relay.kernelWG.interface | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.agent.xrayURL }}
+            - -xray-url
+            - {{ .Values.agent.xrayURL | quote }}
+{{- end }}
+{{- if .Values.agent.xraySHA512 }}
+            - -xray-sha512
+            - {{ .Values.agent.xraySHA512 | quote }}
+{{- end }}
+          env:
+            - name: WINGSV_FED_HEAD
+              value: {{ required "head.endpoint is required" .Values.head.endpoint | quote }}
+            - name: WINGSV_FED_ENROLL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "node.secretName" . }}
+                  key: ENROLL_COMPOUND
+{{- if .Values.relay.enabled }}
+            - name: WINGSV_FED_RELAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "node.secretName" . }}
+                  key: RELAY_GRPC_TOKEN
+{{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/wings/federation
+          resources:
+{{ toYaml .Values.agent.resources | indent 12 }}
+{{- if .Values.relay.enabled }}
+        - name: relay
+          image: {{ .Values.relay.image.repository }}:{{ .Values.relay.image.tag }}
+          imagePullPolicy: {{ .Values.relay.image.pullPolicy }}
+          securityContext:
+{{ include "node.securityContext" . | indent 12 }}
+          # Straight to the binary, past the image's entrypoint. That script is
+          # written for a docker-run client container: it builds its own flags
+          # from environment variables, hardcodes -listen, and does not forward
+          # "$@", so anything set here would be dropped without a word.
+          command:
+            - {{ .Values.relay.binaryPath | quote }}
+          args:
+            - -listen
+            - {{ .Values.relay.dtlsListen | quote }}
+            # Куда релей отдаёт расшифрованный трафик. С kernel WG это его же
+            # интерфейс на этой машине
+            - -udp-connect
+            - {{ .Values.relay.backend | default (printf "127.0.0.1:%v" .Values.relay.kernelWG.listenPort) | quote }}
+            - -grpc-listen
+            - {{ .Values.relay.grpcListen | quote }}
+            - -grpc-token
+            - $(RELAY_GRPC_TOKEN)
+{{- if .Values.relay.provision.enabled }}
+            # Провижн: релей спрашивает голову, кому выдавать wg-пир. У ноды
+            # федерации панели нет, и без этого VK TURN обслуживать некого
+            - -panel-grpc
+            - {{ .Values.relay.provision.head | default (printf "%s:%v" (splitList ":" .Values.head.endpoint | first) .Values.relay.provision.port) | quote }}
+            - -panel-insecure={{ .Values.relay.provision.insecure }}
+            # Голова знает секрет флота, а токен управления релеем - нет
+            - -panel-token
+            - $(FLEET_SECRET)
+{{- end }}
+{{- if .Values.relay.kernelWG.enabled }}
+            # Релею федерации нельзя отдавать трафик никуда, кроме своего же
+            # WireGuard: только там его видно наблюдению и только там его режет
+            # шейпер
+            - -federation
+            # Kernel WireGuard, not the userspace one: wgctrl drives netlink
+            # directly, and with hostNetwork the interface lands on the host
+            - -wg-apply=true
+            - -wg-interface
+            - {{ .Values.relay.kernelWG.interface | quote }}
+            - -wg-listen-port
+            - {{ .Values.relay.kernelWG.listenPort | quote }}
+            - -wg-address
+            - {{ .Values.relay.kernelWG.address | quote }}
+{{- end }}
+          env:
+            - name: RELAY_GRPC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "node.secretName" . }}
+                  key: RELAY_GRPC_TOKEN
+{{- if .Values.relay.provision.enabled }}
+            - name: FLEET_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "node.secretName" . }}
+                  key: FLEET_SECRET
+{{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/wings/federation
+          resources:
+{{ toYaml .Values.relay.resources | indent 12 }}
+{{- end }}
+      volumes:
+        - name: state
+{{- if .Values.hostState.enabled }}
+          hostPath:
+            path: {{ .Values.hostState.path }}
+            type: DirectoryOrCreate
+{{- else }}
+          emptyDir: {}
+{{- end }}
+{{- if .Values.kernelModuleCheck }}
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: proc-modules
+          hostPath:
+            path: /proc/modules
+{{- end }}
+{{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}

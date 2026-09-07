@@ -1,0 +1,687 @@
+// Агент разговаривает с башкой. Две RPC намеренно: Join идёт под enroll-токеном,
+// Session под секретом ноды. Каждая лишняя unary это ещё один способ сдохнуть за
+// чужим NAT
+syntax = "proto3";
+
+package wingsv.federation.v1;
+
+option go_package = "wingsnet.org/federation/gen/fedpb;fedpb";
+
+service Federation {
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Session(stream AgentFrame) returns (stream HeadFrame);
+  // Точка наблюдения внутри блокируемой сети. Из сети башки нода бывает
+  // идеально живой, а оттуда, где сидят люди, полный хуй
+  rpc ProbeSession(stream ProbeFrame) returns (stream ProbeTask);
+}
+
+// Ноду чаще шейпят, чем блокируют: хендшейк проходит, а у человека килобайты в
+// секунду. Поэтому меряем протащенные байты, а не факт дозвона
+message ProbeReport {
+  string node_id = 1;
+  // Какой адрес мерили, их у ноды несколько и работает не каждый
+  string address = 11;
+  // tcp и xhttp режут независимо, поэтому башка выдаёт живой транспорт, а не
+  // выкидывает ноду целиком
+  string transport = 2;
+  bool handshake_ok = 3;
+  uint32 handshake_ms = 4;
+  uint64 download_bps = 5;
+  uint64 upload_bps = 6;
+  uint32 rtt_ms = 7;
+  double loss_pct = 8;
+  int64 measured_unix = 9;
+  string error = 10;
+}
+
+message ProbeHello {
+  string probe_id = 1;
+  string region = 2;
+  string isp = 3;
+  string asn = 4;
+  string agent_version = 5;
+}
+
+message ProbeFrame {
+  oneof frame {
+    ProbeHello hello = 1;
+    ProbeReport report = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+// Башка минтит одноразовый профиль на каждую проверку, чтобы на точке
+// наблюдения не лежала ничья личность.
+//
+// Только Xray: гонять VKTP значит мерить релеи ВК, а не пожертвованную ноду
+message ProbeTarget {
+  string node_id = 1;
+  string transport = 2;
+  string host = 3;
+  uint32 port = 4;
+  string uuid = 5;
+  string flow = 6;
+  string reality_public_key = 7;
+  string server_name = 8;
+  string short_id = 9;
+  string xhttp_path = 10;
+  uint32 download_bytes = 11;
+  // Что тянуть через туннель. Держит башка, чтобы увести весь флот зондов с
+  // цели, которая начала резать, не трогая ни одну точку
+  string download_url = 12;
+  // Постквантовая половина, если нода её объявила. Без неё зонд намеряет
+  // несуществующую поломку
+  string mldsa65_verify = 13;
+}
+
+message ProbeTask {
+  repeated ProbeTarget targets = 1;
+  uint32 interval_seconds = 2;
+}
+
+// Про адрес говорят три источника, и решает только третий: нода объявляет свои
+// интерфейсы, башка видит, откуда реально пришло соединение (это подделать
+// нельзя), а зонд доказывает, что байты текут
+message NodeAddress {
+  string address = 1;
+  // IPv6 это бонус, а не замена: почти все дотягиваются только по IPv4, поэтому
+  // нода без подтверждённого IPv4 считается недостижимой, хоть у неё оценка
+  // трижды охуенная
+  bool ipv6 = 2;
+  // Кто про адрес заявил: reported с интерфейсов агента, observed от башки по
+  // входящему соединению, configured когда оператор прибил руками
+  string source = 3;
+  int64 first_seen_unix = 4;
+}
+
+// Летит на каждое изменение набора, а не только при вступлении: пропавший адрес
+// снимаем быстро, новый проверяем зондом до выдачи
+message AddressReport {
+  repeated NodeAddress addresses = 1;
+}
+
+// Нода говорит про себя сама, поэтому веры нет: башка проверяет до ротации
+message NodePassport {
+  string hostname = 1;
+  // Именно набор: провайдеры таскают сервер между адресами и старый нихуя не
+  // убирают. Каждая запись кандидат, пока не проверена
+  repeated NodeAddress addresses = 2;
+  reserved 3;
+  string arch = 4;
+  string os = 5;
+  string kernel = 6;
+  uint32 cpu_cores = 7;
+  uint64 mem_bytes = 8;
+  uint32 nic_speed_mbps = 9;
+  string agent_version = 10;
+  bool has_root = 11;
+  bool kernel_wg_available = 12;
+  // По нему башка кладёт в профиль шифр WRAP. Это подсказка в конфиге, а не
+  // согласование в хендшейке: без AES-NI выигрывает ChaCha20
+  bool aes_ni = 13;
+  // Оператор объявляет при вступлении, никто это не проверяет: базы ASN у башки
+  // нет. Нужно только чтобы две ноды человека не сели к одному провайдеру, так
+  // что враньё бьёт по самому донору и больше ни по кому
+  string asn = 14;
+  string country = 15;
+}
+
+message JoinRequest {
+  string enroll_token = 1;
+  // Считается на самой машине, чтобы перезачисленную ноду узнали как ту же
+  string node_fingerprint = 2;
+  NodePassport passport = 3;
+  uint64 declared_monthly_budget_bytes = 4;
+  // Нода стоит за прокси, который терминирует 443 и отдаёт адрес клиента
+  // заголовком PROXY protocol. Так живут ноды в нашем кластере, где 443 держит
+  // ingress; на донорской VPS этого нет и не нужно.
+  bool behind_proxy = 30;
+  // Порт прокси, куда стучится клиент. Уходит в выданные ссылки вместо того,
+  // что слушает Xray
+  uint32 public_port = 31;
+  repeated uint32 offered_ports = 5;
+  string donor_hint = 6;
+}
+
+message JoinResponse {
+  string node_id = 1;
+  string node_secret = 2;
+  string head_endpoint = 3;
+  NodeConfig initial_config = 4;
+  uint32 heartbeat_interval_ms = 5;
+  uint32 stats_interval_ms = 6;
+  // Список кандидатов за башкой, приговор за агентом: быстрый из одной страны
+  // dest в другой может быть зацензурен нахуй
+  repeated string reality_candidates = 7;
+  string error = 8;
+}
+
+// Только публичные половины. Приватный ключ живёт на ноде, иначе один вскрытый
+// донор сжигает входную личность всего флота
+message RealityIdentity {
+  repeated string server_names = 1;
+  string dest = 2;
+  uint32 xver = 3;
+  repeated string short_ids = 4;
+  // Каким отпечатком uTLS прикидываться клиенту. Держит башка, чтобы увести
+  // флот с примелькавшегося отпечатка, не трогая ни одну ноду
+  string fingerprint = 5;
+  // Подпись позаимствованного сертификата через ML-DSA-65, по умолчанию
+  // выключена намеренно.
+  //
+  // REALITY прячет свой ответ внутри хендшейка, взятого у dest, а подпись
+  // здоровая, и во многие приличные dest она нихуя не влезает: хендшейк падает с
+  // отрицательным паддингом, ноды тухнут все разом, а health при этом зелёный.
+  // Включать только с замеренным dest: www.cloudflare.com не тянет, dl.google.com
+  // тянет
+  bool post_quantum = 6;
+}
+
+message XhttpSpec {
+  string path = 1;
+  string mode = 2;
+  string host = 3;
+  uint32 sc_max_each_post_bytes = 4;
+  uint32 x_padding_bytes = 5;
+}
+
+message InboundSpec {
+  // Инбаунд стоит за прокси, который отдаёт настоящий адрес клиента заголовком
+  // PROXY protocol. Без этого Xray видит адрес прокси, и GetStatsOnlineIpList
+  // перестаёт отличать одного клиента от сорока - антиабуз не падает, он
+  // молча замолкает.
+  bool accept_proxy_protocol = 20;
+  // Порт, который видит клиент. Отличается от port, когда инбаунд стоит за
+  // прокси: слушает он локальный, а в ссылку должен идти тот, куда клиент
+  // реально стучится - иначе выданные ссылки ведут в никуда.
+  uint32 public_port = 21;
+  string tag = 1;
+  string protocol = 2;
+  string listen = 3;
+  uint32 port = 4;
+  // REALITY живёт в per-inbound stream settings, поэтому личность у обоих одна
+  string network = 5;
+  XhttpSpec xhttp = 6;
+  // Vision на tcp, пусто на xhttp. VLESS отшивает vision-аккаунт, если клиент
+  // прислал пустой flow, так что одной записью два инбаунда не накрыть
+  string flow = 7;
+  bool reality = 8;
+  string decryption = 9;
+}
+
+message VKTPSpec {
+  bool enabled = 1;
+  uint32 listen_port = 2;
+  string wrap_mode = 3;
+  string wrap_cipher = 4;
+  string wg_tunnel_cidr = 5;
+  uint32 wg_listen_port = 6;
+}
+
+message RoutingPolicy {
+  repeated string blocked_geosite = 1;
+  repeated uint32 blocked_ports = 2;
+  bool block_bittorrent = 3;
+  bool block_private = 4;
+}
+
+message SniffPolicy {
+  bool enabled = 1;
+  repeated string dest_override = 2;
+}
+
+message LimitsSpec {
+  uint32 max_sessions = 1;
+  uint64 rate_bytes_per_sec = 2;
+}
+
+message NodeConfig {
+  uint64 version = 1;
+  RealityIdentity reality = 2;
+  repeated InboundSpec inbounds = 3;
+  VKTPSpec vktp = 4;
+  RoutingPolicy routing = 5;
+  SniffPolicy sniff = 6;
+  LimitsSpec limits = 7;
+  // Какие сборки нести. Приезжают в конфиге, а не задаются флагом на ноде:
+  // версия - решение оператора для всего флота, и донор не должен ходить на свой
+  // сервер, чтобы её сменить.
+  BinarySpec xray_build = 8;
+  BinarySpec vktp_build = 9;
+  // Ставить новую сборку самому, как только она приехала в конфиге. Выключено -
+  // нода сообщает о расхождении и ждёт явной команды: перезапуск Xray рвёт живые
+  // соединения, и на чужом сервере это решение не наше.
+  bool auto_upgrade = 10;
+}
+
+// BinarySpec - что качать и чем проверить. Хеш обязателен: без него нода
+// выполняет всё, что отдал сервер раздачи.
+message BinarySpec {
+  string version = 1;
+  string url = 2;
+  string sha512 = 3;
+}
+
+message Hello {
+  string node_id = 1;
+  // Меняется на рестарте и говорит башке, что счётчики обнулились. Без него
+  // ребут молча возвращает донору уже потраченный трафик
+  string boot_id = 2;
+  string agent_version = 3;
+  string xray_version = 4;
+  string vktp_version = 5;
+  uint64 config_version = 6;
+  // Паспорт переезжает вместе с нодой: провайдер меняет адрес и не убирает
+  // старый, а зачисление случается один раз за всю жизнь ноды
+  NodePassport passport = 7;
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+  double cpu_pct = 2;
+  double load1 = 3;
+  uint64 mem_used_bytes = 4;
+  uint64 mem_total_bytes = 5;
+  uint64 disk_free_bytes = 6;
+  uint64 uptime_seconds = 7;
+  string xray_state = 8;
+  string vktp_state = 9;
+  uint64 iface_rx_bytes = 10;
+  uint64 iface_tx_bytes = 11;
+  // Версии живут здесь, а не только в hello: hello уходит раньше, чем ядро и
+  // релей поднялись, и башка видела бы пустые строки до переподключения
+  string xray_version = 12;
+  string vktp_version = 13;
+  // Адрес релея, каким его набирает приложение: внешний адрес ноды и порт, на
+  // котором релей слушает. Собирается на ноде, потому что снаружи виден только
+  // один из них
+  string relay_endpoint = 14;
+  // Заперт ли релей на своём WireGuard. Спрашивается у самого процесса на каждом
+  // ударе сердца, а не при вступлении: флаги в чужом systemd правит кто угодно и
+  // когда угодно
+  bool relay_federation = 15;
+}
+
+message InboundSample {
+  string tag = 1;
+  uint64 up_bytes = 2;
+  uint64 down_bytes = 3;
+  uint32 sessions = 4;
+}
+
+// Кумулятив, а не дельты: скорость считает башка, поэтому проёбанный сэмпл ничего
+// не стоит
+message StatsSample {
+  int64 unix_ms = 1;
+  uint64 seq = 2;
+  string boot_id = 3;
+  uint64 total_up_bytes = 4;
+  uint64 total_down_bytes = 5;
+  uint32 active_sessions = 6;
+  uint32 active_streams = 7;
+  repeated InboundSample inbounds = 8;
+  // Трафик наших собственных замеров. Он входит в total_* и в общую статистику,
+  // но из бюджета донора вычитается: это наша проверка, а не его пользователи
+  uint64 probe_bytes = 9;
+  // Дельты по выданным профилям, только metered: за остальные никто не
+  // подписывает расписок
+  repeated ProfileDeltaSample profiles = 10;
+  // Дельты по пирам VK TURN. Отдельным списком: агент знает только ключ, а кто
+  // за ним стоит - дело башки, она провижн и выдавала
+  repeated PeerDeltaSample peers = 11;
+}
+
+message ProfileDeltaSample {
+  string profile_id = 1;
+  uint64 up_delta_bytes = 2;
+  uint64 down_delta_bytes = 3;
+  int64 last_seen_ms = 4;
+  // Каким транспортом это прошло: у профиля их несколько, и человек видит их
+  // в списке отдельными строками. Сложить их в одну цифру - значит наврать ему
+  // вдвое. Пусто у нод старой сборки
+  string transport = 5;
+}
+
+message ProfileSample {
+  repeated ProfileDeltaSample profiles = 1;
+}
+
+// PeerDeltaSample - сколько пронёс один пир релея с прошлого замера
+message PeerDeltaSample {
+  string public_key = 1;
+  uint64 up_delta_bytes = 2;
+  uint64 down_delta_bytes = 3;
+}
+
+message BudgetReport {
+  int64 period_start_unix = 1;
+  uint64 used_bytes_this_period = 2;
+  uint64 declared_budget_bytes = 3;
+  uint64 remaining_bytes = 4;
+  int64 projected_exhaustion_unix = 5;
+}
+
+message ProbeResult {
+  string target = 1;
+  // Дешёвый вердикт на уровне TLS, мол попробовать стоит, и только
+  bool feasible = 2;
+  bool tls13 = 3;
+  bool h2 = 4;
+  bool x25519 = 5;
+  bool cert_valid = 6;
+  uint32 latency_ms = 7;
+  // SAN из сертификата. Один хост даёт целый пул: сертификат music.yandex.ru
+  // накрывает ещё .uz и .kz, и каждое имя годится как SNI
+  repeated string server_names = 8;
+  string error = 9;
+  // Оба поля берутся из живого хендшейка REALITY, а не из разглядывания ответа
+  // TLS. По виду не предсказывается нихуя: хендшейк на 4605 байт тянет ML-DSA-65,
+  // на 3888 не тянет, а на 9895 сыпется даже без него
+  bool reality_ok = 10;
+  bool post_quantum_ok = 11;
+  // Сколько dest прислал в ответ. Держим для разбора, решений по этому не
+  // принимаем
+  uint32 handshake_bytes = 12;
+}
+
+message ConfigAck {
+  uint64 config_version = 1;
+  bool ok = 2;
+  string error = 3;
+  int64 applied_unix = 4;
+  repeated string effective_inbounds = 5;
+  // Публичные половины пары, которую нода сгенерила у себя. Башке они нужны
+  // только чтобы собрать ссылки
+  string reality_public_key = 6;
+  string mldsa65_verify = 7;
+  repeated ProbeResult probe_results = 8;
+}
+
+// Только класс, адрес назначения никогда: агент раскладывает по классам у себя
+enum AbuseKind {
+  ABUSE_KIND_UNSPECIFIED = 0;
+  ABUSE_KIND_ADS = 1;
+  ABUSE_KIND_MALWARE = 2;
+  ABUSE_KIND_TORRENT = 3;
+  ABUSE_KIND_MAIL_PORT = 4;
+  ABUSE_KIND_PORT_SCAN = 5;
+  ABUSE_KIND_HIGH_FANOUT = 6;
+  ABUSE_KIND_UPLOAD_HEAVY = 7;
+  // Профиль работает одновременно из мест, между которыми сотни километров.
+  // Считает нода: count - расстояние в сотнях километров, сами адреса и города
+  // остаются на ней и башке не отправляются
+  ABUSE_KIND_GEO_SPREAD = 8;
+  // За подпиской пришёл клиент, который не назвал устройство. Наше приложение
+  // называет его всегда, значит это либо чужой клиент, либо пересланная ссылка
+  ABUSE_KIND_NO_DEVICE_ID = 9;
+  // Трафик через ноду идёт, а расписок за него нет. Наше приложение их шлёт
+  // всегда, так что молчит либо чужой клиент, либо кто-то, кому есть что
+  // скрывать от сверки
+  ABUSE_KIND_NO_RECEIPTS = 10;
+  // Клиент называет один адрес, а нода видит совсем другой. Значит поверх
+  // нашего туннеля крутится ещё один, или профилем пользуется не он
+  ABUSE_KIND_ADDRESS_MISMATCH = 11;
+  // Под одним профилем наружу лезут разные TLS-стеки. Адрес у мобильного
+  // меняется законно, а стек нихуя: это несколько устройств на одной ссылке
+  ABUSE_KIND_CLIENT_SPREAD = 12;
+  // Суточного ритма нет: активность ровной полкой круглые сутки. У человека
+  // ночью провал в разы, даже когда туннель висит постоянно, а ровная полка
+  // без провала - это работа, а не жизнь
+  ABUSE_KIND_FLAT_RHYTHM = 13;
+}
+
+message AbuseSignal {
+  string profile_id = 1;
+  AbuseKind kind = 2;
+  double weight = 3;
+  uint32 count = 4;
+  uint32 window_seconds = 5;
+}
+
+// Расписка это подписанное клиентом заявление о том, сколько он получил.
+// Подделать её нода не может, поэтому платить есть смысл только по ней.
+//
+// Считаем полезную нагрузку туннеля, а не байты на интерфейсе: интерфейсный
+// счётчик тащит локальный DNS, keepalive и оверхед самого туннеля, и две стороны
+// не сойдутся никогда, потому что считают разную хуйню
+message TrafficReceipt {
+  string client_id = 1;
+  string node_id = 2;
+  // Каким путём шли байты, xray или vktp. Нода несёт оба, и считаются они
+  // по-разному, поэтому безымянная расписка бесполезна нахуй
+  string transport = 9;
+  int64 window_start_unix = 3;
+  int64 window_end_unix = 4;
+  uint64 payload_up_bytes = 5;
+  uint64 payload_down_bytes = 6;
+  // Чтобы нода не предъявила одну расписку за несколько окон
+  string nonce = 7;
+  // Ed25519 по канонической кодировке, ключом клиента из его учётки
+  bytes signature = 8;
+}
+
+message ReceiptBatch {
+  repeated TrafficReceipt receipts = 1;
+}
+
+// DomainSample - сколько раз профиль сходил на домен за окно. Нода ничего не
+// хранит у себя: сложила в память, отдала башке, забыла. Сырые строки лога с
+// чужой машины не уезжают и на диск там не ложатся
+message DomainSample {
+  string profile_id = 1;
+  string domain = 2;
+  uint32 count = 3;
+  uint64 up_bytes = 4;
+  uint64 down_bytes = 5;
+  // Сколько соединений жило дольше порога. Пачка коротких запросов и один
+  // долгий поток - разное поведение, а по общему счётчику они неразличимы
+  uint32 long_lived = 6;
+  int64 first_seen_unix = 7;
+  int64 last_seen_unix = 8;
+  // Порт назначения. Списки доменов обходятся поднятием своего домена, а вот
+  // почтовые порты подделать нельзя, спам идёт именно в них
+  uint32 port = 9;
+}
+
+// PortSample - соединения профиля, у которых домена не было вовсе. Голый адрес
+// это либо торрент, либо чужой прокси, либо сканирование, и по доменам такое не
+// видно в принципе
+message PortSample {
+  string profile_id = 1;
+  uint32 port = 2;
+  uint32 count = 3;
+  uint32 distinct_targets = 4;
+  uint64 up_bytes = 5;
+  uint64 down_bytes = 6;
+}
+
+// ClientAddresses - с каких адресов профиль сейчас работает, в виде отпечатков.
+//
+// Хеши, а не адреса: башке нужно только сверить их с тем, что клиент заявил о
+// себе сам, и для этого сам адрес наверх тащить незачем
+message ClientAddresses {
+  string profile_id = 1;
+  repeated bytes addr_hash = 2;
+}
+
+// ClientPrint - отпечаток TLS-стека, с которого профиль лез наружу. Адрес у
+// мобильного меняется законно, а стек нет, поэтому пяток разных отпечатков на
+// одной ссылке это какая-то хуйня, а не переезд между сетями
+message ClientPrint {
+  string profile_id = 1;
+  // JA4 основной, JA3 держим ради внешних фидов, они всё ещё на нём
+  string ja4 = 2;
+  string ja3 = 3;
+  uint32 count = 4;
+  int64 first_seen_unix = 5;
+  int64 last_seen_unix = 6;
+}
+
+message DomainBatch {
+  repeated DomainSample samples = 1;
+  repeated PortSample ports = 4;
+  repeated ClientAddresses addresses = 5;
+  repeated ClientPrint prints = 6;
+  uint32 window_seconds = 2;
+  // Сколько событий ядро выкинуло, не успев отдать. Без этого тишина
+  // неотличима от того, что мы просрали половину наблюдений
+  uint64 dropped = 3;
+}
+
+message Alarm {
+  string level = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message AgentFrame {
+  oneof frame {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    StatsSample stats = 3;
+    ProfileSample profiles = 4;
+    BudgetReport budget = 5;
+    ConfigAck config_ack = 6;
+    AbuseSignal abuse = 7;
+    Alarm alarm = 8;
+    AddressReport addresses = 9;
+    ReceiptBatch receipts = 10;
+    DomainBatch domains = 12;
+    FetchResult fetch_result = 13;
+    // Летит по концу скана, а это минуты после применения конфига: живой
+    // хендшейк на каждого кандидата не может держать ack
+    RealityScan reality_scan = 11;
+  }
+}
+
+// Какие dest эта нода проверила. Ноды расходятся во мнениях, потому что живой из
+// Франкфурта dest в другой сети зацензурен, поэтому башка ждёт несколько
+// приговоров, прежде чем двигать флот
+message RealityScan {
+  repeated ProbeResult results = 1;
+  int64 completed_unix = 2;
+}
+
+message ProfileSpec {
+  // Профили федерации metered: их выдают бесплатным людям с нашим приложением,
+  // а оно подписывает расписки. С не-metered расписок не просят и не скорят
+  bool metered = 6;
+  string profile_id = 1;
+  string uuid = 2;
+  string email = 3;
+  // По записи на инбаунд, потому что vision между ними не шарится
+  string inbound_tag = 4;
+  string flow = 5;
+  // Потолки скорости профиля, байт в секунду, по направлениям отдельно: канал
+  // домашнего пользователя несимметричен, и одна цифра на оба конца врёт про
+  // обе. Ноль - без потолка. Нода раскладывает пару в уровень политики Xray,
+  // потому что ядро ограничивает по уровню, а не по конкретному аккаунту
+  uint64 uplink_bps = 7;
+  uint64 downlink_bps = 8;
+}
+
+message ProfileDelta {
+  repeated ProfileSpec add = 1;
+  repeated string remove_profile_ids = 2;
+  // Делает add истиной в последней инстанции: всё, чего нет в списке, нода
+  // выкидывает. Шлётся на переподключение, потому что снятие, выписанное пока
+  // нода лежала, просто проебалось, а вернувшаяся нода, всё ещё обслуживающая
+  // переехавшего человека, это профиль, который никто не считает
+  bool replace = 3;
+  // Ключи пиров VK TURN, которых надо выкинуть с релея. Отдельным полем, потому
+  // что живут они не в ядре, а в релее, и снятие профиля их не касается: без
+  // этого карантин остаётся бумажным, а уже выданный пир возит трафик дальше
+  repeated string remove_peer_keys = 4;
+  // Потолки скорости для пиров VK TURN. У релея ограничителя нет, поэтому режет
+  // ядро ноды по адресу пира
+  repeated PeerLimit peer_limits = 5;
+}
+
+// PeerLimit - сколько разрешено качать одному пиру VK TURN и чей он.
+//
+// Профиль тут нужен не для скорости, а для наблюдения: у релея access-лога нет,
+// домены снимаются с wg-интерфейса, а там виден только адрес внутри туннеля
+message PeerLimit {
+  string allowed_ips = 1;
+  uint64 downlink_bps = 2;
+  string profile_id = 3;
+}
+
+enum RotationState {
+  ROTATION_STATE_UNSPECIFIED = 0;
+  ROTATION_STATE_ACTIVE = 1;
+  ROTATION_STATE_DRAINING = 2;
+  ROTATION_STATE_PARKED = 3;
+  ROTATION_STATE_QUARANTINED = 4;
+}
+
+message RotationCommand {
+  RotationState state = 1;
+  string reason = 2;
+  int64 resume_after_unix = 3;
+}
+
+message BudgetUpdate {
+  uint64 declared_budget_bytes = 1;
+  int64 period_start_unix = 2;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+// Описано, чтобы потом не ломать провод, и намеренно не реализовано: кривое
+// автообновление кирпичит ЧУЖИЕ серверы
+message UpgradeCommand {
+  string component = 1;
+  string version = 2;
+  string url = 3;
+  string sha512 = 4;
+  // Перезапустить компонент, ничего не скачивая. Так оператор чинит зависший
+  // Xray, не трогая версию.
+  bool restart_only = 5;
+}
+
+message Ack {
+  uint64 seq = 1;
+}
+
+message SecretRotate {
+  string new_secret = 1;
+}
+
+message HeadFrame {
+  oneof frame {
+    NodeConfig config_push = 1;
+    ProfileDelta profile_delta = 2;
+    RotationCommand rotation = 3;
+    BudgetUpdate budget = 4;
+    Ping ping = 5;
+    UpgradeCommand upgrade = 6;
+    Ack ack = 7;
+    SecretRotate secret_rotate = 8;
+    // Сходи за телом по ссылке и принеси. Нужно, когда IP башки прикрыли: у
+    // ноды адрес свой, и через неё видно то, что нам уже нихуя не видно
+    FetchRequest fetch = 9;
+  }
+}
+
+// FetchRequest - башка просит ноду сходить наружу вместо неё
+message FetchRequest {
+  string id = 1;
+  string url = 2;
+  // Заголовки идут как есть: тем же устройством надо представляться и с ноды,
+  // иначе на той стороне это выглядит как новая железка
+  map<string, string> headers = 3;
+  uint32 timeout_seconds = 4;
+  uint32 max_bytes = 5;
+}
+
+// FetchResult - что нода принесла. Ошибку тоже несёт: молчание неотличимо от
+// потерянного кадра, и башка ждала бы его вечно
+message FetchResult {
+  string id = 1;
+  uint32 status = 2;
+  bytes body = 3;
+  string error = 4;
+}

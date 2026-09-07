@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package xray.app.wingsvpn.watch;
+option csharp_namespace = "Xray.App.Wingsvpn.Watch";
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+option java_package = "com.xray.app.wingsvpn.watch";
+option java_multiple_files = true;
+
+// AccessEvent - одно закрытое соединение целиком, а не строка лога. Текстовый
+// access-лог парсить нельзя, апстрим его формат меняет когда захочет, и в этот
+// момент весь разбор наебашивается молча, а объёма с длительностью там нет и
+// близко
+message AccessEvent {
+  int64 at_unix_nano = 1;
+  // Тег юзера у inbound, у федерации это профиль
+  string email = 2;
+  string inbound_tag = 3;
+  string outbound_tag = 4;
+  string source_ip = 5;
+  // Пусто, когда цель адресована голым IP. Домен появляется только со
+  // включённым sniffing
+  string target_domain = 6;
+  string target_ip = 7;
+  uint32 target_port = 8;
+  string network = 9;
+  uint64 up_bytes = 10;
+  uint64 down_bytes = 11;
+  uint32 duration_ms = 12;
+  // Отпечаток TLS-клиента. Адрес у мобильного меняется законно, а стек нет:
+  // пять разных отпечатков на одной ссылке это разные люди
+  string tls_ja3 = 13;
+  string tls_ja4 = 14;
+}
+
+message StreamAccessRequest {}
+
+// Config включает сервис. Пустой нарочно, крутилок тут не предусмотрено
+message Config {}
+
+// WingsWatch отдаёт события наружу. Ничего никуда не пишется, пока никто не
+// подписан, и на диск не ложится вообще ничего
+service WingsWatch {
+  rpc StreamAccess(StreamAccessRequest) returns (stream AccessEvent);
+}

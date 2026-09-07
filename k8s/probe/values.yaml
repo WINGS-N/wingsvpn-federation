@@ -1,0 +1,65 @@
+# Where everything lands. Set on purpose so a plain "helm install" puts this in
+# wingsvpn. Helm still records the release in the namespace of -n, so pass
+# "-n wingsvpn" too or "helm list -n wingsvpn" will come back empty.
+namespace: wingsvpn
+
+# Object names are built from this, not from the release name.
+nameOverride: fed-probe
+
+# A probe is only worth what its vantage point is worth.
+#
+# It measures whether a node is usable from where the users actually are, so it
+# belongs in a cluster inside the censored network. Running it next to the head
+# measures the head's own network, which nobody is asking about. Deploy this
+# somewhere else, on purpose.
+
+# Nothing publishes this image yet - the repo has no CI. Build and push it first.
+image:
+  repository: ghcr.io/wings-n/wingsvpn-federation
+  tag: latest
+  pullPolicy: Always
+
+replicas: 1
+
+probe:
+  # Порт, на котором ноды пускают зонда к башке. Ноль выключает запасной путь
+  relayPort: 0
+  # Пути через ноды, заданные руками, вида host:port
+  relays: []
+  # Stable per vantage point: reports are filed against it.
+  id: ""
+  region: ""
+  isp: ""
+  asn: ""
+  head:
+    endpoint: ""
+    fleetSecret: ""
+  socksPort: 41080
+  # Where the probe fetches the Xray it measures through. It measures by pulling
+  # bytes over a real REALITY tunnel, so there is no measuring without it.
+  xrayURL: ""
+  xraySHA512: ""
+
+existingSecret: ""
+
+# No privileges and no inbound ports: a probe only dials out. That also means a
+# seized vantage point gives up nothing but the ability to measure - it holds no
+# node credential and no user identity.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Образ приватный, поэтому нужен pull-секрет:
+#   kubectl -n wingsvpn create secret generic ghcr-auth \
+#     --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+#     --type=kubernetes.io/dockerconfigjson
+imagePullSecrets:
+  - name: ghcr-auth

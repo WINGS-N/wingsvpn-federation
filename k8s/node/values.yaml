@@ -1,0 +1,168 @@
+# Where everything lands. Set on purpose so a plain "helm install" puts this in
+# wingsvpn. Helm still records the release in the namespace of -n, so pass
+# "-n wingsvpn" too or "helm list -n wingsvpn" will come back empty.
+namespace: wingsvpn
+
+# Object names are built from this, not from the release name.
+nameOverride: fed-node
+
+# A federation node in our own cluster is not a donated node - it is our own
+# capacity, seeded into the pool. A donor still joins with join.sh on their own
+# VPS; the two coexist.
+
+agent:
+  # Nothing publishes this image yet - the repo has no CI. Build and push it
+  # before the first install.
+  image:
+    repository: ghcr.io/wings-n/wingsvpn-federation
+    tag: latest
+    pullPolicy: Always
+  # Where the agent fetches Xray. It supervises the binary itself rather than
+  # running it as a sidecar, so the image only needs the agent.
+  xrayURL: ""
+  xraySHA512: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    # No CPU limit by default, on purpose. This is a packet path: CFS throttling
+    # shows up as latency and loss, not as a number anybody looks at.
+    limits:
+      memory: 512Mi
+
+relay:
+  enabled: true
+  # The fork has a Dockerfile but its release workflow does not publish an image
+  # either. Same story: build and push before installing.
+  image:
+    repository: ghcr.io/wings-n/vk-turn-proxy
+    tag: latest
+    pullPolicy: Always
+  # The image's entrypoint is a docker-run helper that builds its own flags and
+  # does not forward arguments, so the chart calls the binary directly.
+  binaryPath: /app/vk-turn-proxy
+  # Loopback control API. hostNetwork means the agent reaches it on 127.0.0.1
+  # without a Service in the way, and loopback is the only place it should ever
+  # listen: it can create and delete tunnel peers.
+  grpcListen: 127.0.0.1:25612
+  # Bearer token for that API. The agent presents it; generate one per cluster.
+  grpcToken: ""
+  dtlsListen: 0.0.0.0:56000
+  provision:
+    # Релей ходит к голове за подтверждением клиента. Токен тот же, что у его
+    # управляющего API: голова проверяет его как bearer
+    enabled: true
+    # Пусто - берётся хост из head.endpoint с портом ниже. Ноде внутри того же
+    # кластера, что и голова, нужен адрес сервиса: наружу этот порт не выставлен
+    head: ""
+    port: 9313
+    insecure: true
+  # Бэкенд, которому релей отдаёт расшифрованный трафик. Пусто - собственный
+  # kernel WireGuard на этой же машине
+  backend: ""
+  # Kernel WireGuard. wgctrl talks netlink and needs NET_ADMIN; the interface is
+  # created in the host's network namespace because hostNetwork is on.
+  kernelWG:
+    enabled: true
+    interface: wg-wingsv
+    listenPort: 51820
+    address: 10.66.66.1/24
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# hostNetwork is not optional and turning it off breaks two things quietly.
+#
+# Behind a Service the source address is rewritten, so every client looks like the
+# node and GetStatsOnlineIpList - which is what the abuse detection reads - stops
+# telling one client from forty. And UDP_GRO, the offload that carries the relay's
+# throughput, only coalesces on a real NIC path; over an overlay the win is gone.
+# Нода за ingress: 443 держит Traefik, и попасть на него можно только через
+# него же. Работает только там, где Traefik есть - донорская VPS про это ничего
+# не знает и берёт порт напрямую.
+behindProxy:
+  # Маршрут Traefik ведёт голова: она знает dest каждой ноды и переписывает
+  # список при его смене. true - только для установки без головы рядом
+  manageRoute: false
+  enabled: false
+  # Порт, на котором Xray слушает локально. Наружу он не открывается: снаружи
+  # только 443 через Traefik, поэтому «палёность» порта тут роли не играет.
+  localPort: 8443
+  # SNI, которые Traefik отдаёт этой ноде. Это dest, чью tls-личность она
+  # заимствует: правило матчит именно его, иначе Traefik заберёт весь 443 и
+  # положит всё остальное в кластере.
+  serverNames: []
+
+hostNetwork: true
+
+# NET_ADMIN for wgctrl and the interface, NET_BIND_SERVICE for 443. Full
+# privileged is available but is not needed for kernel WireGuard.
+privileged: false
+
+# Fails loudly when the host has no WireGuard module rather than letting the relay
+# come up and quietly serve nothing. Same doctrine as the installer's preflight.
+kernelModuleCheck: true
+
+# Node identity lives on the host, so a rescheduled pod is the same node to the
+# head rather than a new enrolment every restart.
+hostState:
+  enabled: true
+  path: /var/lib/wings/federation-node
+
+head:
+  endpoint: ""
+  # The compound value from `wingsv-fed mint`, or the panel. Single use unless it
+  # was minted for several: a DaemonSet enrols every host it lands on out of this
+  # one Secret, so it needs -uses set to the number of hosts.
+  enrollToken: ""
+  fleetSecret: ""
+existingSecret: ""
+
+enroll:
+  budgetGB: 1000
+  # Ports to offer, tcp first then xhttp. Empty means the agent picks: 443 when
+  # it can bind it, otherwise a port derived from this host's own fingerprint -
+  # stable across restarts and belonging to no published list, unlike the
+  # Cloudflare set every circumvention guide names.
+  #
+  # Set them by hand when something claims a port through a hostPort rather than
+  # a socket - Traefik's DaemonSet is the usual case. The agent probes by
+  # binding, and a hostPort is DNAT in PREROUTING with nothing listening in the
+  # host namespace, so the bind succeeds, the port looks free, and every packet
+  # is still taken by the other rule before it reaches us. Nothing about that
+  # failure is visible from inside the pod, which is why it has to be said here.
+  ports: []
+  # Порты, которые связываются, но не работают. В кубере это 443: Traefik держит
+  # его через hostPort, то есть DNAT в PREROUTING без сокета - агент биндится
+  # успешно, считает порт своим, и не получает ни одного пакета. Изнутри пода
+  # это не диагностируется, поэтому говорим прямо.
+  excludePorts: [443, 80]
+  # Public address of the host. Needed whenever the machine cannot see its own -
+  # behind NAT, or on a floating IP the interface never holds.
+  address: ""
+  asn: ""
+  country: ""
+
+nodeSelector: {}
+tolerations:
+  # A node carries traffic; it belongs wherever it is scheduled, including on
+  # control-plane hosts if that is what the cluster has.
+  - operator: Exists
+affinity: {}
+
+# Образ приватный, поэтому нужен pull-секрет:
+#   kubectl -n wingsvpn create secret generic ghcr-auth \
+#     --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+#     --type=kubernetes.io/dockerconfigjson
+imagePullSecrets:
+  - name: ghcr-auth
+
+# Труба, через которую зонды дотягиваются до башки, когда её адрес закрыт
+probeRelay:
+  enabled: false
+  port: 30311
+  # Куда труба ведёт. Пусто - на тот же адрес, которым нода говорит с башкой
+  head: ""

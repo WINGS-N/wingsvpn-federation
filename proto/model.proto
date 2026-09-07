@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package wingsv.federation.model;
+option go_package = "wingsnet.org/federation/gen/modelpb;modelpb";
+
+// TreeNode - узел решающего дерева. Лист, когда feature меньше нуля.
+//
+// Ссылки на детей идут индексами в плоском списке, а не вложенностью: так
+// дерево переживает сериализацию без всякой возни с указателями и читается
+// одним проходом
+message TreeNode {
+  int32 feature = 1;
+  double threshold = 2;
+  int32 left = 3;
+  int32 right = 4;
+  double value = 5;
+}
+
+message Tree {
+  repeated TreeNode nodes = 1;
+}
+
+// BoostModel - обученный ансамбль целиком.
+//
+// Порядок features прибит к модели нарочно: перепутать колонки местами и не
+// заметить - самый простой способ выкатить хуйню, которая молча судит людей не
+// по тем числам
+message BoostModel {
+  repeated string features = 1;
+  repeated Tree trees = 2;
+  double base = 3;
+  double rate = 4;
+  // TrainedOn - на скольких примерах училась. Меньше сотни это не модель, а
+  // заученный наизусть шум
+  int32 trained_on = 5;
+  int64 trained_at_unix = 6;
+  // Version попадает в вердикт, чтобы через месяц было понятно, какая именно
+  // модель кого отрезала
+  string version = 7;
+}
+
+// FeatureSnapshot - вектор одного субъекта за одно окно, как он лёг в базу.
+//
+// Копится с первого дня, иначе учить потом будет не на чем: свёрнутый в вердикт
+// вектор проёбан навсегда, из готового решения его уже хуй восстановишь
+message FeatureSnapshot {
+  string subject_id = 1;
+  int64 at_unix = 2;
+  map<string, double> values = 3;
+  // FeatureVersion - какой набор признаков тут лежит. Смешаешь в обучении два
+  // разных набора - получишь модель, которая судит по мусору и молчит об этом
+  string feature_version = 4;
+}

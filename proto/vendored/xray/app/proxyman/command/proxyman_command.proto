@@ -1,0 +1,45 @@
+// Vendored from XTLS/Xray-core app/proxyman/command/command.proto (WINGS-N fork).
+// AlterInbound adds and removes users on a live core. Restarting a donated node
+// to add one free profile would drop the donor's own paying clients
+syntax = "proto3";
+
+package xray.app.proxyman.command;
+
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+
+import "xray/common/protocol/user.proto";
+import "xray/common/serial/typed_message.proto";
+
+message AddUserOperation {
+  xray.common.protocol.User user = 1;
+}
+
+message RemoveUserOperation {
+  string email = 1;
+}
+
+message AlterInboundRequest {
+  string tag = 1;
+  xray.common.serial.TypedMessage operation = 2;
+}
+
+message AlterInboundResponse {}
+
+message GetInboundUserRequest {
+  string tag = 1;
+  string email = 2;
+}
+
+message GetInboundUserResponse {
+  repeated xray.common.protocol.User users = 1;
+}
+
+message GetInboundUsersCountResponse {
+  int64 count = 1;
+}
+
+service HandlerService {
+  rpc AlterInbound(AlterInboundRequest) returns (AlterInboundResponse) {}
+  rpc GetInboundUsers(GetInboundUserRequest) returns (GetInboundUserResponse) {}
+  rpc GetInboundUsersCount(GetInboundUserRequest) returns (GetInboundUsersCountResponse) {}
+}

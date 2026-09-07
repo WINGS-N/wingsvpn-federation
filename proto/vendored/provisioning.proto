@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+// Package and service names mirror the panel's provisioning.proto exactly so the
+// generated method paths line up; only go_package differs. This is the node
+// (client) side: during app self-enroll the node calls the panel to verify the
+// client token and obtain (creating on first use) the client's WireGuard config.
+package wingsv.provisioning.v1;
+
+option go_package = "github.com/cacggghp/vk-turn-proxy/provisioningpb;provisioningpb";
+
+service Provisioning {
+  rpc ResolveClientConfig(ResolveClientConfigRequest) returns (ResolveClientConfigResponse);
+  // GetClientUsage returns the traffic-limit usage of the capped or disabled
+  // managed clients that hold a wg peer on the calling node. The relay polls it
+  // and surfaces used/remaining to the app (e.g. in its DTLS heartbeat) and can
+  // also enforce a hard cutoff. Clients with no cap and not disabled are omitted.
+  rpc GetClientUsage(GetClientUsageRequest) returns (GetClientUsageResponse);
+}
+
+message ResolveClientConfigRequest {
+  string client_id = 1;
+  bytes token = 2;
+  string hwid = 3;
+  string node_id = 4;
+  // When set, this node reports a wg peer it just minted locally for the client
+  // (own-wg provision-locally path); the panel records it instead of dialing back
+  // this node's management API. Empty on the initial resolve.
+  string wg_public_key = 5;
+  string wg_private_key = 6;
+  string wg_allowed_ips = 7;
+  string wg_server_public_key = 8;
+}
+
+message ResolveClientConfigResponse {
+  WireguardConfig wg = 1;
+  // The client's whole VK link pool. The enrollment QR carries one link to stay
+  // scannable; the rest arrives here. All of them are sent, not "the ones the QR
+  // lacked" - the app merges append-only, so the QR's link is simply already
+  // there, and remembering which one it got would be state nobody needs.
+  repeated string vk_links = 3;
+  // provision_locally: mint the peer on this node's own wg interface and re-call
+  // ResolveClientConfig with the wg_* fields to record it, instead of the panel
+  // dialing this node back (a re-entrant call that breaks during provision).
+  bool provision_locally = 2;
+}
+
+message GetClientUsageRequest {
+  string node_id = 1;
+}
+
+message GetClientUsageResponse {
+  repeated ClientUsage usage = 1;
+}
+
+// ClientUsage is one managed client's traffic-limit state on the calling node,
+// keyed by its wg peer public key so the relay can match it to a live session.
+message ClientUsage {
+  string public_key = 1;
+  string client_id = 2;
+  uint64 limit_bytes = 3;
+  uint64 used_bytes = 4;
+  uint64 remaining_bytes = 5;
+  bool disabled = 6;
+}
+
+message WireguardConfig {
+  string private_key = 1;
+  string public_key = 2;
+  string address = 3;
+  string server_public_key = 4;
+  string allowed_ips = 5;
+  uint32 mtu = 6;
+}

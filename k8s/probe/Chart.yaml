@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wingsv-fed-probe
+description: Зонд федерации WINGS V - меряет ноды оттуда, где сидят пользователи
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

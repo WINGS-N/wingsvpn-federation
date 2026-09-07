@@ -1,0 +1,184 @@
+# Where everything lands. Set on purpose so a plain "helm install" puts this in
+# wingsvpn. Helm still records the release in the namespace of -n, so pass
+# "-n wingsvpn" too or "helm list -n wingsvpn" will come back empty.
+namespace: wingsvpn
+
+# Object names are built from this, not from the release name.
+nameOverride: fed-head
+
+# Nothing publishes this image yet - the repo has no CI. Build and push it before
+# the first install, or the pull fails with a name that never existed.
+image:
+  repository: ghcr.io/wings-n/wingsvpn-federation
+  tag: latest
+  pullPolicy: Always
+
+# Одна реплика и Recreate - не выбор, а следствие. Состояние переехало в
+# Postgres, но голова осталась синглтоном: она держит gRPC-стримы всех агентов и
+# считает живую статистику в памяти, а реестр пишет транзакцией "снести всё и
+# вставить заново". Две реплики разделят агентов между собой, счётчики разъедутся,
+# и записи реестра начнут затирать друг друга. RollingUpdate по той же причине
+# ожидая том, который ещё держит старый под.
+replicas: 1
+
+head:
+  # Адрес, который голова сообщает нодам при вступлении. Ноды - чужие серверы,
+  # поэтому здесь публичное имя, а не имя сервиса внутри кластера.
+  advertise: ""
+  agentPort: 9310
+  panelPort: 9311
+  subPort: 9312
+  # Порт, на котором релеи нод спрашивают, кому минтить wg-пир
+  provisionPort: 9313
+  # Дверь для зондов: свой порт и свой ключ, чтобы нода-труба видела только
+  # непрозрачные байты
+  probePort: 9314
+  # Публичный origin, с которого отдаются подписка и установщик. Он попадает
+  # в саму ссылку подписки и в строку join, поэтому менять его после того как
+  # ссылки разошлись по устройствам - значит их сломать.
+  subBase: "https://federation.wingsnet.org"
+  # Куда нода качает бинарь агента; __ARCH__ подставляется установщиком
+  agentRelease: ""
+  # Сколько трафика объявляет вставляемая в терминал команда, в ГиБ
+  # Сколько микро-USDT платить за гигабайт трафика, который подписали клиенты.
+  # Ноль означает, что выплаты не считаются вовсе: начислять деньги по случайно
+  # оставшейся в конфиге ставке нельзя
+  payoutMicroPerGiB: 0
+  # Длина расчётного периода. Чаще - гонять донора клеймить по копейке, реже -
+  # держать его без денег дольше, чем он готов ждать
+  payoutPeriod: 168h
+  donationGB: 500
+  # REALITY-dest. Пустой + realityAuto=true - голова подберёт сама сканом.
+  realityDest: ""
+  realityAuto: false
+  # ML-DSA-65 включать только с dest, который его тянет: подпись прячется в
+  # заимствованном хендшейке, и на маленьком dest нода поднимется, но не соединится
+  realityPQ: false
+  tcpPort: 443
+  xhttpPort: 8443
+  # Выдавать только адреса, подтверждённые зондом. Включать, когда зонды реально
+  # стоят: без них это запаркует весь флот.
+  requireProbe: false
+
+# Секреты кладутся в Secret релиза. Пустое значение - Secret не создаётся, и тогда
+# существующий берётся по existingSecret.
+secrets:
+  fleetSecret: ""
+  panelSecret: ""
+existingSecret: ""
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+
+service:
+  type: ClusterIP
+
+# Канал агентов - единственный порт, который обязан быть виден снаружи, и через
+# HTTP-ingress он не пройдёт: транспорт tokenaead это сырой AES-GCM без TLS, то
+# есть без SNI, роутить прокси не по чему. Порт попадает в head.advertise и в
+# join.sh, поэтому он прибит гвоздём, а не выделяется динамически.
+# Состояние головы. CNPG-оператор в кластере уже стоит, чарт только объявляет
+# кластер: реестр узлов, выдачи и счётчик переезжают из файлов в БД, а признаки
+# для Oracle (сигналы с метками времени и журнал решений) в файл не легли бы
+# вовсе. Выключишь - голова вернётся к файлам на томе.
+postgres:
+  enabled: true
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
+  database: federation
+  owner: federation
+  # Обязателен при включённой БД
+  password: ""
+  sslmode: require
+  parameters:
+    max_connections: "100"
+  storage:
+    size: 5Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  import:
+    enabled: false
+    host: ""
+    database: ""
+    owner: ""
+    sslmode: require
+
+# Маршрут Traefik для нод, стоящих за ingress. Голова правит его сама, потому
+# что SNI в нём это dest ноды, а он меняется.
+ingressRoute:
+  enabled: true
+  name: fed-node-reality
+  service: fed-node-local
+  port: 8443
+
+agentService:
+  enabled: true
+  type: NodePort
+  nodePort: 30310
+
+# Дверь для зондов: свой порт, свой ключ
+probeService:
+  enabled: false
+  type: NodePort
+  nodePort: 30312
+
+ingress:
+  enabled: true
+  className: traefik
+  host: federation.wingsnet.org
+  annotations:
+    # Без этого роутер цепляется ко всем entrypoint'ам, включая metrics и ssh,
+    # где HTTP-роутер ломает TCP-passthrough всему остальному на них
+    traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+  tls:
+    enabled: true
+    # Пусто - значит fed-head-tls, который выпишет Certificate ниже
+    secretName: ""
+
+# cert-manager уже стоит в кластере; чарт только просит у него сертификат
+# и ничего не устанавливает. Солвер тут DNS-01 через Cloudflare, поэтому
+# challenge не зависит от того, отвечает ли ingress.
+certificate:
+  enabled: true
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+  extraDNSNames: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Образ приватный, поэтому нужен pull-секрет:
+#   kubectl -n wingsvpn create secret generic ghcr-auth \
+#     --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+#     --type=kubernetes.io/dockerconfigjson
+imagePullSecrets:
+  - name: ghcr-auth
+
+# Публикация эпох выплат в цепочку. Без неё эпохи копятся в базе, и это законный
+# режим: цепочка нужна для выплат, а не для учёта
+chain:
+  enabled: false
+  rpc: "https://api.mainnet-beta.solana.com"
+  program: "HkehHmkTSBt6nrcwjhvznJfgkEhSd7ysUDVaT2iMqUfT"
+  # Счёт, с которого уходят выплаты, и минт, на котором донорам заводятся свои
+  treasury: "6rVxKSZSBb2CKjnq1GCqyAcxyyLKhLrk61WYE21G4ma1"
+  mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+  keySecret: ""

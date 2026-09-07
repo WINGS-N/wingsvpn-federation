@@ -1,0 +1,14 @@
+// Vendored from XTLS/Xray-core common/protocol/user.proto (WINGS-N fork)
+syntax = "proto3";
+
+package xray.common.protocol;
+
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+
+import "xray/common/serial/typed_message.proto";
+
+message User {
+  uint32 level = 1;
+  string email = 2;
+  xray.common.serial.TypedMessage account = 3;
+}

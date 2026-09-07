@@ -1,0 +1,68 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  check:
+    name: Format, vet, lint and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      # The same four gates AGENTS.md requires before a commit, in the same order,
+      # so CI can only ever agree with what a local run already said.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # Линтер ставится из исходников, а не готовым бинарём: релизные сборки идут
+      # на Go старше, чем go.mod, и падают на разборе конфига ещё до проверок
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
+          golangci-lint run ./...
+
+      - name: go test
+        run: go test ./...
+
+  charts:
+    name: Helm charts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      # A chart that does not render is found here rather than during a deploy.
+      # Required values are passed as throwaway placeholders: the point is the
+      # template, not the value.
+      - name: helm lint
+        run: |
+          helm lint k8s/head \
+            --set head.advertise=fed.example:9310 \
+            --set secrets.fleetSecret=x --set secrets.panelSecret=y
+          helm lint k8s/node --set head.endpoint=fed.example:9310
+          helm lint k8s/probe \
+            --set probe.id=ci --set probe.head.endpoint=fed.example:9310 \
+            --set probe.head.fleetSecret=x
