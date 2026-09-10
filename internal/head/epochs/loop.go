@@ -104,6 +104,9 @@ func NewLoop(collector *Collector, clock Clock, period time.Duration, log func(s
 // Run крутится, пока жив ctx. Запускать только на активной реплике: две башки,
 // закрывающие один период, выпишут донору две эпохи за одни и те же байты
 func (l *Loop) Run(ctx context.Context) {
+	// Первый заход сразу: тикер на час означал бы, что после каждого выката
+	// зависшая эпоха ждёт публикации ещё час, а закрытый период - до двух
+	l.Once()
 	ticker := time.NewTicker(checkEvery)
 	defer ticker.Stop()
 	for {
