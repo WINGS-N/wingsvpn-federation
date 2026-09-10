@@ -43,6 +43,15 @@ type Marks interface {
 	MarkPublished(number uint64, at time.Time, ref string) error
 }
 
+// Pending отдаёт эпохи, чей корень так и не уехал в цепочку.
+//
+// Период сдвигается сразу после закрытия, поэтому упавшая публикация без
+// повтора не случится больше никогда: начисления посчитаны, а забрать их нечем
+type Pending interface {
+	Unpublished(limit int) ([]uint64, error)
+	Epoch(number uint64) (*payout.Epoch, error)
+}
+
 // Rates хранит объявленные ставки. Объявленное не переписывается: донор повёз
 // трафик под ту цену, которую видел
 type Rates interface {
@@ -65,10 +74,14 @@ type Loop struct {
 	log       func(string, ...any)
 	publisher Publisher
 	marks     Marks
+	pending   Pending
 	rates     Rates
 	treasury  Treasury
 	bounds    payout.RateBounds
 }
+
+// SetPending включает повтор публикации для эпох, которые её не пережили
+func (l *Loop) SetPending(p Pending) { l.pending = p }
 
 // SetPublisher включает публикацию в цепочку. Без него эпохи просто копятся в
 // базе, и это законный режим: цепочка нужна для выплат, а не для учёта
@@ -103,8 +116,37 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
+// retryUnpublished добирает то, что не уехало с прошлых заходов
+func (l *Loop) retryUnpublished() {
+	if l.pending == nil || l.publisher == nil {
+		return
+	}
+	numbers, err := l.pending.Unpublished(retryBatch)
+	if err != nil {
+		if l.log != nil {
+			l.log("epochs: unpublished list unreadable: %v", err)
+		}
+		return
+	}
+	for _, number := range numbers {
+		epoch, err := l.pending.Epoch(number)
+		if err != nil {
+			if l.log != nil {
+				l.log("epochs: epoch %d unreadable: %v", number, err)
+			}
+			continue
+		}
+		l.publish(epoch)
+	}
+}
+
+// retryBatch - сколько зависших эпох добираем за круг. Их не бывает много, а
+// вешать на публичный RPC десятки транзакций подряд незачем
+const retryBatch = 4
+
 // Once закрывает период, если он уже кончился
 func (l *Loop) Once() {
+	l.retryUnpublished()
 	last, err := l.clock.LastPeriodEnd()
 	if err != nil {
 		if l.log != nil {

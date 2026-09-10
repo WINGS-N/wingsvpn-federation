@@ -88,6 +88,37 @@ func (e *EpochStore) Last() (uint64, error) {
 	return row.Number, err
 }
 
+// Next - номер следующей эпохи. Пустая база значит нулевую, а не первую:
+// программа в цепочке принимает ровно тот номер, которого ждёт, и начинает с
+// нуля
+func (e *EpochStore) Next() (uint64, error) {
+	var row EpochRow
+	err := e.gdb.Order("number DESC").First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return row.Number + 1, nil
+}
+
+// Unpublished - закрытые эпохи, корень которых так и не уехал в цепочку.
+// Публикация могла отбиться о молчащий RPC, а период при этом уже сдвинут:
+// без повтора такая эпоха остаётся бумажкой навсегда
+func (e *EpochStore) Unpublished(limit int) ([]uint64, error) {
+	var rows []EpochRow
+	err := e.gdb.Where("published_at IS NULL").Order("number ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint64, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.Number)
+	}
+	return out, nil
+}
+
 // MarkPublished отмечает, что корень уехал в цепочку
 func (e *EpochStore) MarkPublished(number uint64, at time.Time, ref string) error {
 	res := e.gdb.Model(&EpochRow{}).Where("number = ?", number).

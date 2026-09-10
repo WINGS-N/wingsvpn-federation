@@ -83,6 +83,28 @@ type epochStore struct {
 
 func (e epochStore) Last() (uint64, error) { return e.store.Last() }
 
+func (e epochStore) Next() (uint64, error) { return e.store.Next() }
+
+func (e epochStore) Unpublished(limit int) ([]uint64, error) { return e.store.Unpublished(limit) }
+
+// Epoch собирает закрытую эпоху обратно из базы, чтобы повторить публикацию.
+// Дерево пересчитывается из тех же листьев, поэтому корень выходит прежний
+func (e epochStore) Epoch(number uint64) (*payout.Epoch, error) {
+	row, err := e.store.Get(number)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := e.store.Leaves(number)
+	if err != nil {
+		return nil, err
+	}
+	leaves := make([]payout.Leaf, 0, len(rows))
+	for _, leaf := range rows {
+		leaves = append(leaves, payout.Leaf{Address: leaf.Address, Amount: payout.Micro(leaf.AmountMicro)})
+	}
+	return payout.BuildEpoch(number, row.StartAt, row.EndAt, leaves)
+}
+
 func (e epochStore) Baselines() (map[string]uint64, error) { return e.store.Baselines() }
 
 func (e epochStore) SaveBaselines(next map[string]uint64) error {

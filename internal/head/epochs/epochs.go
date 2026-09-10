@@ -62,7 +62,10 @@ type Staked interface {
 
 // Store хранит эпохи и базу счётчиков, от которой считается прирост
 type Store interface {
-	Last() (uint64, error)
+	// Next - номер, под которым уедет следующая эпоха. Первая идёт нулевой:
+	// программа в цепочке заводится с next_epoch = 0 и принимает только его,
+	// так что нумерация с единицы означала бы отказ на каждой публикации
+	Next() (uint64, error)
 	Save(epoch *payout.Epoch, donorByAddress map[string]string) error
 	Baselines() (map[string]uint64, error)
 	SaveBaselines(map[string]uint64) error
@@ -166,11 +169,10 @@ func (c *Collector) Close(start, end time.Time) (*payout.Epoch, error) {
 		})
 	}
 
-	number, err := c.store.Last()
+	number, err := c.store.Next()
 	if err != nil {
 		return nil, err
 	}
-	number++
 
 	accruals := payout.AccrueNodes(volumes, c.rate, start, end)
 	c.rememberVolume(volumes)

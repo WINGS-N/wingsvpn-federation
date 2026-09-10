@@ -62,6 +62,13 @@ func newStore() *memStore {
 
 func (m *memStore) Last() (uint64, error) { return m.last, nil }
 
+func (m *memStore) Next() (uint64, error) {
+	if m.saved == nil {
+		return 0, nil
+	}
+	return m.last + 1, nil
+}
+
 func (m *memStore) Save(epoch *payout.Epoch, donorByAddress map[string]string) error {
 	m.saved, m.donors, m.last = epoch, donorByAddress, epoch.Number
 	return nil
@@ -111,8 +118,13 @@ func TestSecondEpochPaysOnlyTheGrowth(t *testing.T) {
 	if second.Total != payout.Micro(200_000) {
 		t.Fatalf("вторая эпоха насчитала %s, а прирост был 20 GiB", second.Total.FormatUSDT())
 	}
-	if second.Number != 2 {
-		t.Fatalf("номер эпохи %d, а она вторая", second.Number)
+	// Нумерация идёт с нуля: программа в цепочке принимает ровно тот номер,
+	// которого ждёт, а заводится она с нулевого
+	if first.Number != 0 {
+		t.Fatalf("номер первой эпохи %d, а цепочка ждёт нулевую", first.Number)
+	}
+	if second.Number != 1 {
+		t.Fatalf("номер эпохи %d, а она вторая после нулевой", second.Number)
 	}
 }
 

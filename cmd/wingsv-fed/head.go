@@ -636,6 +636,7 @@ func runHead(args []string) error {
 					return chain.MustKey(account), true
 				})
 				loop.SetPublisher(publisher, store.store)
+				loop.SetPending(store)
 				// Цена плавает по казне и объявляется на период вперёд. Наша
 				// нынешняя ставка тут потолок: выше не платим даже с набитой
 				// казной, иначе раздадим всё за одну эпоху
