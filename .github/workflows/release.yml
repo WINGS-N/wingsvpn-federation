@@ -1,0 +1,52 @@
+name: Release binaries
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      # join.sh fetches wingsv-fed-linux-<arch> from wherever the head points its
+      # -agent-release, so these names are a contract with the installer rather
+      # than a convention. Changing one breaks enrolment on every new node.
+      - name: Build
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" \
+                -o "dist/wingsv-fed-linux-$arch" ./cmd/wingsv-fed
+          done
+          cd dist
+          for f in wingsv-fed-linux-*; do
+            sha256sum "$f" | cut -d" " -f1 > "$f.sha256"
+            sha512sum "$f" | cut -d" " -f1 > "$f.sha512"
+          done
+
+      # Сумма лежит отдельным файлом рядом с бинарём, как в остальных релизах
+      # WINGS: установщик берёт её сам и сверяет то, что скачал
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/wingsv-fed-linux-amd64
+            dist/wingsv-fed-linux-amd64.sha256
+            dist/wingsv-fed-linux-amd64.sha512
+            dist/wingsv-fed-linux-arm64
+            dist/wingsv-fed-linux-arm64.sha256
+            dist/wingsv-fed-linux-arm64.sha512
+          fail_on_unmatched_files: true

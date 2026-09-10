@@ -1,0 +1,807 @@
+// Башка разговаривает с панелью. Отдельно от federation.proto, потому что
+// собеседники разные: тут своя панель оператора, там чужой сервер
+syntax = "proto3";
+
+package wingsv.headpanel.v1;
+
+option go_package = "wingsnet.org/federation/gen/headpb;headpb";
+
+service FederationHead {
+  // Агрегаты для лендинга. Самое узкое сообщение в файле намеренно, его отдают
+  // кому угодно
+  rpc GetPublicCounters(PublicCountersRequest) returns (PublicCounters);
+  // Один долгоживущий стрим, чтобы панель меняла подписку без передозвона
+  rpc StreamLive(stream LiveSubscribe) returns (stream LiveUpdate);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // Что донору дозволено видеть про свой вклад. Только агрегаты: во всём сервисе
+  // нет ни одной RPC, которая связывает ноду с профилем или человеком, и заводить
+  // такую нельзя нахуй
+  rpc DonorSummary(DonorSummaryRequest) returns (DonorCounters);
+  // Помесячная разбивка того же вклада. Счётчик за период обнуляется, и без
+  // истории донору нечего показать за прошлый месяц.
+  rpc DonorHistory(DonorHistoryRequest) returns (DonorHistoryResponse);
+  // Выдаёт бесплатному человеку ноды или возвращает те, что уже есть.
+  // Идемпотентно, поэтому панель может дёргать на каждый вход и никого не
+  // перетасует
+  rpc EnsureUser(EnsureUserRequest) returns (UserAllocation);
+  // Снимает человека со всех нод, когда oracle отправил его в карантин
+  rpc RevokeUser(RevokeUserRequest) returns (RevokeUserResponse);
+  rpc MintEnrollToken(MintEnrollTokenRequest) returns (MintEnrollTokenResponse);
+  rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
+  // Донор забирает машину: снимаем с неё людей и выкидываем из реестра. Держать
+  // чужое железо силой мы не будем, федерация на добровольности и стоит
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  // Сколько трафика донор обещает в этом месяце. Меняется на живой ноде: пока
+  // этого не было, поднять лимит можно было только перезачислением, теряя
+  // личность ноды, результаты зондов и уже посчитанный за период трафик.
+  rpc SetNodeBudget(SetNodeBudgetRequest) returns (SetNodeBudgetResponse);
+  // Настройки всего флота: какие сборки нести, чем прикрываться, обновляться ли
+  // самим. Это решение оператора, а не донора и не флага на ноде.
+  rpc GetFleetSettings(FleetSettingsRequest) returns (FleetSettings);
+  rpc SetFleetSettings(FleetSettings) returns (FleetSettings);
+  // Перезапустить компонент. Пустой node_id - на всём флоте.
+  rpc RestartComponent(RestartComponentRequest) returns (RestartComponentResponse);
+  // Что намеряли точки наблюдения внутри цензурируемой сети. Единственный
+  // источник правды о том, работает ли нода там, где сидят люди.
+  rpc ProbeReports(ProbeReportsRequest) returns (ProbeReportsResponse);
+  // Замерить прямо сейчас, не дожидаясь круга. Круг идёт раз в пять минут, и
+  // проверить только что поднятую ноду иначе нечем.
+  rpc RunProbes(RunProbesRequest) returns (RunProbesResponse);
+  // Состояние Oracle: кого он смотрит, что решил и на основании чего.
+  rpc OracleOverview(OracleOverviewRequest) returns (OracleOverviewResponse);
+  // Один субъект целиком: вердикт, вклад классов и сырые сигналы. Отвечает на
+  // вопрос "за что", который иначе остаётся без ответа.
+  rpc OracleSubject(OracleSubjectRequest) returns (OracleSubjectResponse);
+  // Судим и ноды тоже: враньё о трафике, провалы зондов, мигание
+  rpc OracleNodes(OracleNodesRequest) returns (OracleNodesResponse);
+  // Разметка снимков: что наразмечала модель и что с этим сделал человек.
+  // Учить бустинг на непроверенной машинной разметке - способ выучить её же
+  // ошибки и потом резать по ним живых людей
+  rpc OracleLabels(OracleLabelsRequest) returns (OracleLabelsResponse);
+  rpc SetOracleLabel(SetOracleLabelRequest) returns (OracleLabelsResponse);
+  // Деньги донора: куда платить и что уже начислено. Башка считает и хранит,
+  // цепочка потом только фиксирует посчитанное
+  rpc SetPayoutAddress(SetPayoutAddressRequest) returns (SetPayoutAddressResponse);
+  rpc PayoutStatement(PayoutStatementRequest) returns (PayoutStatementResponse);
+  rpc ReleaseStake(ReleaseStakeRequest) returns (ReleaseStakeResponse);
+  // Все эпохи разом - это уже владельцу площадки, а не донору
+  rpc Epochs(EpochsRequest) returns (EpochsResponse);
+  // Дерево инвайтов живёт в панели, а трафик в башке. Без этой карты башка не
+  // отличит донора, обслуживающего чужих людей, от донора, возящего трафик
+  // собственным приглашённым ради выплаты
+  rpc ReportInviteTree(ReportInviteTreeRequest) returns (ReportInviteTreeResponse);
+  // Занос в общий котёл греет доверие: кто донатит, тот не ферма. Проверку
+  // транзакции делает панель, башка получает уже подтверждённое
+  rpc ReportDonation(ReportDonationRequest) returns (ReportDonationResponse);
+  // Купленные подписки заводит владелец площадки. По умолчанию раздача
+  // выключена: за чужим сервером наш Oracle слеп, и включать это должен человек
+  rpc Upstreams(UpstreamsRequest) returns (UpstreamsResponse);
+  rpc PutUpstream(PutUpstreamRequest) returns (UpstreamsResponse);
+  rpc RemoveUpstream(RemoveUpstreamRequest) returns (UpstreamsResponse);
+  rpc EnableUpstreams(EnableUpstreamsRequest) returns (UpstreamsResponse);
+}
+
+enum LiveScope {
+  LIVE_SCOPE_UNSPECIFIED = 0;
+  LIVE_SCOPE_GLOBAL = 1;
+  LIVE_SCOPE_DONOR = 2;
+  LIVE_SCOPE_NODE = 3;
+}
+
+message LiveSubscribe {
+  LiveScope scope = 1;
+  // Заполняется для scope DONOR и NODE соответственно
+  string donor_id = 2;
+  string node_id = 3;
+}
+
+message LiveUpdate {
+  int64 unix_ms = 1;
+  GlobalCounters global = 2;
+  DonorCounters donor = 3;
+  NodeCounters node = 4;
+}
+
+message GlobalCounters {
+  uint32 nodes_total = 1;
+  uint32 nodes_online = 2;
+  uint32 sessions = 3;
+  uint32 streams = 4;
+  uint64 up_bytes = 5;
+  uint64 down_bytes = 6;
+  double up_rate_bps = 7;
+  double down_rate_bps = 8;
+  // За всё время федерации, а не за период и не за жизнь процесса. Переживает
+  // рестарт, и ушедшая нода не уносит свою долю с собой
+  uint64 lifetime_bytes = 9;
+  // С начала текущего периода бюджета. Считается от сохранённой отметки, а не
+  // от счётчиков в памяти, поэтому переживает выкат башки
+  uint64 period_bytes = 10;
+  // Часть перенесённого, которую сожгли проверки зондов. Донору это считается
+  // как обычный трафик, но он вправе знать, сколько ушло на наши замеры
+  uint64 probe_bytes = 11;
+}
+
+// Что показывает лендинг. Ни идентификаторов нод, ни доноров, ни разбивки по
+// машинам: это отдаётся вообще без сессии
+message PublicCounters {
+  int64 unix_ms = 1;
+  uint32 nodes_online = 2;
+  uint32 users_online = 3;
+  uint64 donated_bytes_this_period = 4;
+  double up_rate_bps = 5;
+  double down_rate_bps = 6;
+  // Всё, что федерация протащила за свою жизнь. Цифра за период обнуляется и
+  // занижает вклад, а эта честная
+  uint64 lifetime_bytes = 7;
+  // Сколько из перенесённого ушло на проверки зондов
+  uint64 probe_bytes = 8;
+}
+
+message PublicCountersRequest {}
+
+message DonorCounters {
+  string donor_id = 1;
+  uint32 nodes = 2;
+  uint32 nodes_online = 3;
+  uint32 sessions = 4;
+  uint64 up_bytes = 5;
+  uint64 down_bytes = 6;
+  double up_rate_bps = 7;
+  double down_rate_bps = 8;
+  uint64 declared_budget_bytes = 9;
+  uint64 used_bytes = 10;
+  // Сколько зонды нагнали своими проверками. В used_bytes НЕ входит: свою
+  // диагностику мы донору в счёт не пишем
+  uint64 probe_bytes = 11;
+  // Потолок, который уйдёт в команду установки, если донор не назвал свой.
+  // Панель обязана его показать: молча подставить свою цифру в чужое
+  // обязательство это наёбка
+  uint32 default_budget_gb = 12;
+}
+
+message DonorSummaryRequest {
+  string donor_id = 1;
+}
+
+message DonorHistoryRequest {
+  string donor_id = 1;
+  // Сколько последних месяцев вернуть, 0 - двенадцать
+  uint32 months = 2;
+}
+
+// DonorMonth - один месяц вклада донора, закрытый или текущий. Month в формате
+// YYYY-MM по UTC: граница, плывущая вместе с часовым поясом читателя, показала
+// бы двум людям разные суммы.
+message DonorMonth {
+  string month = 1;
+  uint64 bytes = 2;
+}
+
+message DonorHistoryResponse {
+  repeated DonorMonth months = 1;
+}
+
+message NodeCounters {
+  string node_id = 1;
+  string state = 2;
+  string reason = 3;
+  uint32 sessions = 4;
+  double up_rate_bps = 5;
+  double down_rate_bps = 6;
+  uint64 used_bytes = 7;
+  uint64 declared_budget_bytes = 8;
+  int64 last_seen_unix = 9;
+  // Сколько из used_bytes сожгли проверки зондов
+  uint64 probe_bytes = 11;
+  bool online = 10;
+}
+
+message ListNodesRequest {
+  // Пусто значит весь флот, и спросить такое может только оператор
+  string donor_id = 1;
+}
+
+message ListNodesResponse {
+  repeated NodeSummary nodes = 1;
+}
+
+message NodeSummary {
+  // Порты, которые нода реально заняла, и цель, чью tls-личность она
+  // заимствует. У каждой ноды свои: общие на флот - один признак для блокировки
+  repeated uint32 offered_ports = 20;
+  string reality_dest = 21;
+  string node_id = 1;
+  string donor_id = 2;
+  string hostname = 3;
+  string arch = 4;
+  string state = 5;
+  string reason = 6;
+  bool online = 7;
+  bool aes_ni = 8;
+  uint64 declared_budget_bytes = 9;
+  uint64 used_bytes = 10;
+  int64 joined_unix = 11;
+  int64 last_seen_unix = 12;
+  NodeCounters live = 13;
+  // Сборки, которые нода несёт на самом деле
+  string xray_version = 22;
+  string vktp_version = 23;
+  // Сколько из used_bytes сожгли проверки зондов
+  uint64 probe_bytes = 24;
+}
+
+message MintEnrollTokenRequest {
+  string donor_id = 1;
+  uint32 ttl_seconds = 2;
+  // Сколько гигабайт в месяц донор отдаёт с этой машины. Ноль означает общий
+  // потолок площадки: раньше он был единственным, и лимит приходилось править
+  // уже после того, как сервер зашёл
+  uint32 budget_gb = 4;
+  // Сколько нод пустить по одному токену, ноль и единица значат одно и то же.
+  // Нужно донору с флотом: DaemonSet зачисляет каждый хост из одного Secret
+  uint32 uses = 3;
+}
+
+message MintEnrollTokenResponse {
+  // Составное значение, которое установщик берёт как есть. В нём же едет
+  // флотский секрет, потому что транспорт шифруется до того, как у ноды появится
+  // свой
+  string enroll_token = 1;
+  int64 expires_unix = 2;
+  // Команда, которую донор вставляет целиком. Собирает башка, потому что она
+  // знает свой публичный адрес и сама отдаёт установщик, а панель, гадающая об
+  // этом, раздаёт ссылку на 404
+  string install_command = 3;
+  // Сколько вступлений токен ещё разрешал на момент выдачи
+  uint32 uses = 4;
+}
+
+message EnsureUserRequest {
+  // Для башки это непрозрачная строка: идентификатор панели, а не адрес и не имя
+  string user_id = 1;
+}
+
+message UserAllocation {
+  string user_id = 1;
+  // Адрес подписки, который тянет клиент. Неугадываемый и с user_id никак не
+  // связан, потому что путешествует по скриншотам и чатам
+  string subscription_url = 2;
+  // Сколько нод обслуживает человека. Намеренно не какие именно: панели нехуй
+  // сшивать человека с машиной донора
+  uint32 nodes = 3;
+  int64 sticky_until_unix = 4;
+  // Сколько нод полагается по уровню доверия. Отличается от nodes, когда во
+  // флоте нечего выдать: две ноды одного донора падают вместе, и вторую такую
+  // не дают. Без этой цифры кабинет не может объяснить, почему сервер один
+  uint32 nodes_entitled = 5;
+  // Сколько пользователь пронёс за текущий период
+  uint64 used_bytes = 6;
+  // Потолки скорости, байт в секунду. Соразмерны оценке Oracle
+  uint64 uplink_bps = 7;
+  uint64 downlink_bps = 8;
+  // Трафик по каждому серверу. Локальный счётчик в приложении обнуляется при
+  // переустановке и врёт после смены профиля, а этот считает башка по тому же
+  // источнику, из которого потом берутся деньги
+  repeated ServerUsage servers = 9;
+  // Человек в карантине: ноды сняты, но смотреть на себя он право не терял.
+  // Отказ вместо ответа оставлял его в чёрном ящике - ни доверия, ни трафика,
+  // ни причины, за которую срезали
+  bool quarantined = 10;
+  // Оценка Oracle прямо сейчас, 0-100. По ней кабинет объясняет, почему выдача
+  // такая, а не другая
+  uint32 confidence = 11;
+}
+
+// ServerUsage - сколько прошло через одну СТРОКУ списка: сервер плюс транспорт.
+//
+// Именно так человек и видит доступ в приложении, поэтому и цифры даём в той же
+// нарезке. Ядро считает по учётке, а учётка своя на каждый инбаунд
+message ServerUsage {
+  string name = 1;
+  uint64 up_bytes = 2;
+  uint64 down_bytes = 3;
+  int64 last_seen_unix = 4;
+  // tcp, xhttp или vktp
+  string transport = 5;
+}
+
+message RevokeUserRequest {
+  string user_id = 1;
+}
+
+message RevokeUserResponse {}
+
+message SetNodeStateRequest {
+  string node_id = 1;
+  string state = 2;
+  string reason = 3;
+}
+
+message SetNodeStateResponse {}
+
+message FleetSettingsRequest {}
+
+// FleetSettings - то, что оператор задаёт один раз на весь флот.
+message FleetSettings {
+  // Сборки. Пустой url означает "не трогать": нода продолжит нести то, что уже
+  // поставила, а не останется без Xray.
+  BuildChoice xray = 1;
+  BuildChoice vktp = 2;
+  // Ставить новую сборку сразу, как только она приехала. Перезапуск рвёт живые
+  // соединения, поэтому по умолчанию выключено.
+  bool auto_upgrade = 3;
+  // Чью tls-личность занимает REALITY. Пусто и auto_dest - башка выбирает сама
+  // из проверенного пула.
+  string reality_dest = 4;
+  bool auto_dest = 5;
+  // ML-DSA-65 поверх REALITY. Помещается не в каждый заимствованный хендшейк,
+  // поэтому переключатель, а не константа.
+  bool post_quantum = 6;
+  uint32 tcp_port = 7;
+  uint32 xhttp_port = 8;
+  // Версия конфига, которую башка разослала после последнего изменения
+  uint64 config_version = 9;
+  // Сколько целей в проверенном пуле. Ноды разводятся по нему, поэтому dest в
+  // поле выше - лишь та, что досталась бы ноде без своей записи
+  uint32 dest_pool_size = 10;
+  // Пул VK-ссылок на весь флот. Приложение получает его при провижне и
+  // складывает к своим: одна ссылка из QR - это один сдохший звонок до полного
+  // отсутствия связи, а набирать их вручную человек не должен
+  repeated string vk_links = 11;
+}
+
+message BuildChoice {
+  string version = 1;
+  string url = 2;
+  string sha512 = 3;
+}
+
+message RestartComponentRequest {
+  // xray или vktp
+  string component = 1;
+  // Пусто - весь флот
+  string node_id = 2;
+}
+
+message RestartComponentResponse {
+  uint32 nodes = 1;
+}
+
+message SetNodeBudgetRequest {
+  string node_id = 1;
+  uint64 declared_budget_bytes = 2;
+}
+
+message SetNodeBudgetResponse {
+  uint64 declared_budget_bytes = 1;
+  uint64 used_bytes = 2;
+}
+
+message ProbeReportsRequest {
+  // Страница замеров. Их число растёт как ноды на адреса и транспорты, и
+  // отдавать всё разом значит гонять по сети список, который никто не читает
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+message RunProbesRequest {}
+
+message RunProbesResponse {
+  uint32 probes = 1;
+}
+
+// ProbeVantage - одна точка наблюдения, как она себя представила
+message ProbeVantage {
+  string probe_id = 1;
+  string region = 2;
+  string isp = 3;
+  string asn = 4;
+  string version = 5;
+  bool online = 6;
+  int64 last_seen_unix = 7;
+  uint32 measurements = 8;
+}
+
+// ProbeMeasurement - один адрес одной ноды, померенный по одному транспорту
+message ProbeMeasurement {
+  string node_id = 1;
+  string hostname = 2;
+  string address = 3;
+  string transport = 4;
+  bool ok = 5;
+  uint32 handshake_ms = 6;
+  uint32 rtt_ms = 7;
+  uint64 download_bps = 8;
+  string error = 9;
+  string probe_id = 10;
+  int64 at_unix = 11;
+}
+
+message ProbeReportsResponse {
+  repeated ProbeVantage vantages = 1;
+  repeated ProbeMeasurement measurements = 2;
+  // Всего замеров под запрос, до нарезки на страницу
+  uint32 total = 3;
+}
+
+message OracleOverviewRequest {
+  // Сколько подозреваемых вернуть, 0 - двадцать
+  uint32 limit = 1;
+  uint32 offset = 3;
+  // Когда список задан, отдаются вердикты только по нему. Так панель считает
+  // ветку инвайт-дерева: башка про дерево не знает и знать не должна
+  repeated string subject_ids = 2;
+}
+
+message OracleSubjectRequest {
+  string subject_id = 1;
+  // Страница по доменам, 0 - тридцать. Хвост у активного участника уходит в
+  // тысячи строк, и целиком его никто не читает
+  uint32 domain_limit = 2;
+  uint32 domain_offset = 3;
+  // Страница по сырым сигналам
+  uint32 signal_limit = 4;
+  uint32 signal_offset = 5;
+  // За сколько часов поднимать домены, 0 - неделя
+  uint32 window_hours = 6;
+}
+
+// OracleSignal - сырое наблюдение, которое хранится ради ответа на вопрос
+// "за что"
+message OracleSignal {
+  string kind = 1;
+  uint32 count = 2;
+  int64 at_unix = 3;
+  string node_id = 4;
+  uint32 window_seconds = 5;
+}
+
+// OracleDomain - куда субъект ходил чаще всего. Показывается владельцу площадки,
+// донору эти данные не отдаются никогда: он и так видит только агрегаты
+message OracleDomain {
+  string domain = 1;
+  int64 hits = 2;
+  uint64 up_bytes = 3;
+  uint64 down_bytes = 4;
+  int64 last_seen_unix = 5;
+}
+
+message OracleLabelsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  // Только обвинения: чистых накапливается на порядок больше, а проверять надо
+  // именно те, где модель кого-то записала в мошенники
+  bool accused_only = 3;
+}
+
+// OracleLabel - один размеченный снимок, как его показывают человеку.
+//
+// Вектор идёт числами и БЕЗ доменов: по нему модель и решала, по нему человек и
+// проверяет. Имён там нет и не будет
+message OracleLabel {
+  uint64 id = 1;
+  int64 at_unix = 2;
+  string subject_id = 3;
+  // -1 не размечен, 0 чисто, 1 злоупотребление
+  int32 label = 4;
+  // Кто разметил: claude, rules или human
+  string label_by = 5;
+  string why = 6;
+  map<string, double> values = 7;
+}
+
+message OracleLabelsResponse {
+  repeated OracleLabel labels = 1;
+  uint32 total = 2;
+  // Сколько всего размечено машиной и сколько подтвердил человек: по этим двум
+  // числам видно, можно ли уже учить
+  uint32 by_machine = 3;
+  uint32 by_human = 4;
+}
+
+message SetOracleLabelRequest {
+  uint64 id = 1;
+  // Приговор человека. Он старше машинного всегда
+  int32 label = 2;
+}
+
+message OracleSubjectResponse {
+  OracleSubject subject = 1;
+  repeated OracleSignal signals = 2;
+  repeated OracleDomain domains = 3;
+  // Сколько их всего, чтобы страница знала, докуда листать
+  uint32 domains_total = 4;
+  uint32 signals_total = 5;
+}
+
+// OracleNode - доверие к ноде. Отдельная шкала от людской: у ноды другие грехи
+// и другие последствия
+message OracleNode {
+  string node_id = 1;
+  string hostname = 2;
+  string donor_id = 3;
+  int32 trust = 4;
+  // Про ВЫПЛАТЫ, не про выдачу: тёмную ноду из ротации убирают зонды, а тут
+  // решается, сколько ей причитается
+  bool payout_reduced = 5;
+  bool payout_stopped = 6;
+  // Reasons - за что именно, чтобы донору было что предъявить
+  repeated OracleNodeReason reasons = 7;
+  // Probes - как нода выглядит из страны, Uptime - сколько держится
+  uint32 probe_ok = 8;
+  uint32 probe_failed = 9;
+  double uptime_pct = 10;
+  int64 last_seen_unix = 11;
+}
+
+message OracleNodeReason {
+  string reason = 1;
+  double weight = 2;
+}
+
+message OracleNodesRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+message OracleNodesResponse {
+  repeated OracleNode nodes = 1;
+  uint32 total = 2;
+  // Accused - скольким нодам есть что предъявить
+  uint32 accused = 3;
+}
+
+// OracleClass - один класс сигнала и во что он обошёлся субъекту
+message OracleClass {
+  string kind = 1;
+  uint32 count = 2;
+  double weight = 3;
+  // Доля этого класса среди всех сигналов за сутки, процентов
+  double share_pct = 4;
+  // Сколько субъектов словили этот класс
+  uint32 subjects = 5;
+}
+
+// OracleSubject - вердикт вместе с тем, что к нему привело. Субъект тут
+// профиль, а не человек: у башки нет ни имени, ни почты, ни адреса
+message OracleSubject {
+  string subject_id = 1;
+  int32 confidence = 2;
+  string band = 3;
+  string scorer = 4;
+  int64 at_unix = 5;
+  repeated OracleClass classes = 6;
+  // Теневой скорер считает параллельно и ничего не решает
+  string shadow_band = 7;
+  int32 shadow_confidence = 8;
+}
+
+message OracleOverviewResponse {
+  // Всего наблюдаемых, до нарезки на страницу
+  uint32 total = 10;
+  uint32 offset = 11;
+  // Сколько субъектов под обвинением: на них есть сигналы. Полосы ниже считаются
+  // по всем, кому выдан доступ, а не только по обвиняемым - иначе спокойные
+  // пользователи в счётчиках не видны вовсе
+  uint32 watched = 1;
+  // Всем, кому выдан доступ
+  uint32 subjects_total = 12;
+  uint32 full = 2;
+  uint32 reduced = 3;
+  uint32 quarantined = 4;
+  repeated OracleSubject subjects = 5;
+  // Сигналы за сутки по классам
+  repeated OracleClass signals = 6;
+  string scorer = 7;
+  string shadow_scorer = 8;
+}
+
+message SetPayoutAddressRequest {
+  string donor_id = 1;
+  // Кошелёк Solana. Пустой стирает: донор вправе передумать и уйти из выплат
+  string address = 2;
+}
+
+message SetPayoutAddressResponse {}
+
+message ReleaseStakeRequest {
+  string donor_id = 1;
+  // Micro - сколько забрать. Ноль означает "весь залог"
+  uint64 micro = 2;
+}
+
+message ReleaseStakeResponse {
+  StakeStatus stake = 1;
+}
+
+message PayoutStatementRequest {
+  string donor_id = 1;
+  // Сколько последних эпох вернуть, 0 - двадцать
+  uint32 limit = 2;
+}
+
+// EpochAccrual - что донору начислено в одной эпохе
+message EpochAccrual {
+  uint64 number = 1;
+  int64 start_unix = 2;
+  int64 end_unix = 3;
+  // Micro - миллионные доли USDT, потому что деньги считаются целыми
+  uint64 amount_micro = 4;
+  // Root и tx_ref заполняются, когда корень уехал в цепочку. Пустой tx_ref
+  // означает, что эпоха посчитана, но клеймить пока не по чему
+  string root_hex = 5;
+  string tx_ref = 6;
+  int64 published_unix = 7;
+  // Пруф для клейма: путь от своего листа к корню. Башка платит сама, так что
+  // донору он нужен только чтобы проверить нас
+  repeated bytes proof = 8;
+  // Транзакция, которой донору заплатили. Пустая означает, что начислено, но
+  // деньги ещё не ушли
+  string payout_tx = 9;
+  int64 paid_unix = 10;
+  // Цена гигабайта, по которой считали эту эпоху. Плавает по казне, поэтому без
+  // неё выписка не объясняет, почему в этот раз меньше
+  uint64 micro_per_gib = 11;
+}
+
+message PayoutStatementResponse {
+  string address = 1;
+  repeated EpochAccrual epochs = 2;
+  uint64 total_micro = 3;
+  // Сколько уже опубликовано в цепочке, то есть доступно к клейму
+  uint64 claimable_micro = 4;
+  // Условия: без них донору показывают цифру и ни слова о том, откуда она
+  PayoutTerms terms = 5;
+  // Что набежало в текущем НЕзакрытом периоде, по каждой машине
+  repeated NodeAccrual pending = 6;
+  uint64 pending_micro = 7;
+  // Залог. Без него донор возит трафик бесплатно, и цифру начислений ему
+  // показывать нечестно
+  StakeStatus stake = 8;
+}
+
+// StakeStatus - залог донора глазами цепочки
+message StakeStatus {
+  // Deposit - личный адрес донора для взноса: шлёт с любого кошелька, опознаём
+  // по самому адресу
+  string deposit_address = 1;
+  uint64 staked_micro = 2;
+  uint64 required_micro = 3;
+  // IncomingMicro - пришло на личный счёт и ещё не оприходовано
+  uint64 incoming_micro = 4;
+  // PendingMicro - заказано к выводу, unlock_unix - когда отдадут
+  uint64 pending_micro = 5;
+  int64 unlock_unix = 6;
+  // Enough - хватает ли залога, чтобы попасть в выплаты
+  bool enough = 7;
+}
+
+// PayoutTerms - прайс и правила счёта
+message PayoutTerms {
+  // MicroPerGiB - цена гигабайта в миллионных долях USDT
+  uint64 micro_per_gib = 1;
+  uint32 period_seconds = 2;
+  int64 period_start_unix = 3;
+  int64 period_end_unix = 4;
+}
+
+// NodeAccrual - что набежало одной машине и почему столько
+message NodeAccrual {
+  string node_id = 1;
+  string hostname = 2;
+  // SelfBytes - что нода насчитала себе, ReceiptBytes - что подписали клиенты.
+  // Платим по меньшему, и донор вправе видеть оба числа
+  uint64 self_bytes = 3;
+  uint64 receipt_bytes = 4;
+  uint64 billable_bytes = 5;
+  // ProbeConfirmed - подтвердили ли зонды, что через неё вообще идёт трафик из
+  // страны. Без этого не начисляем вовсе
+  bool probe_confirmed = 6;
+  // FactorBps - множитель от репутации, 10000 это полная выплата
+  uint32 factor_bps = 7;
+  uint64 amount_micro = 8;
+}
+
+message EpochsRequest {
+  uint32 limit = 1;
+}
+
+// EpochSummary - эпоха целиком, без разбивки по донорам
+message EpochSummary {
+  uint64 number = 1;
+  int64 start_unix = 2;
+  int64 end_unix = 3;
+  uint64 total_micro = 4;
+  uint32 leaves = 5;
+  string root_hex = 6;
+  string tx_ref = 7;
+  int64 published_unix = 8;
+}
+
+message EpochsResponse {
+  repeated EpochSummary epochs = 1;
+}
+
+// SubjectAncestry - кто пригласил этого участника, вся цепочка вверх.
+//
+// Цепочка целиком, а не только пригласивший: ферма строится на два колена, и
+// проверка одного уровня её не увидит
+message SubjectAncestry {
+  string subject_id = 1;
+  repeated string donor_ids = 2;
+}
+
+message ReportInviteTreeRequest {
+  repeated SubjectAncestry subjects = 1;
+}
+
+message ReportInviteTreeResponse {
+  uint32 subjects = 1;
+}
+
+message ReportDonationRequest {
+  string subject_id = 1;
+  uint64 amount_micro = 2;
+  int64 at_unix = 3;
+  // Подпись транзакции - чтобы один занос не засчитали дважды
+  string reference = 4;
+}
+
+message ReportDonationResponse {
+  // Credit - сколько очков доверия занос даёт прямо сейчас
+  double credit = 1;
+}
+
+message RemoveNodeRequest {
+  string node_id = 1;
+  // Донор проверяется вызывающей стороной, но передаётся и сюда: снести чужую
+  // ноду не должно выходить даже случайно
+  string donor_id = 2;
+}
+
+message RemoveNodeResponse {
+  // Moved - скольких пользователей пришлось переселить
+  uint32 moved = 1;
+}
+
+// UpstreamSource - одна купленная подписка
+message UpstreamSource {
+  string id = 1;
+  // Vendor - чьё это добро. Уходит в имя сервера у человека, чтобы он понимал,
+  // чем пользуется
+  string vendor = 2;
+  string url = 3;
+  // DeviceId - чем башка представляется продавцу, всегда одинаково
+  string device_id = 4;
+  // MaxClients - скольким людям раздавать одновременно. У купленного тарифа
+  // потолок есть всегда, просто мы его не знаем
+  uint32 max_clients = 5;
+  bool enabled = 6;
+  // Links - сколько ссылок прочитали в последний раз, FetchedAt - когда
+  uint32 links = 7;
+  int64 fetched_unix = 8;
+  string last_error = 9;
+}
+
+message UpstreamsRequest {}
+
+message UpstreamsResponse {
+  // Enabled - общий рубильник раздачи купленного
+  bool enabled = 1;
+  repeated UpstreamSource sources = 2;
+  // MinConfidence - какое доверие нужно, чтобы человека вообще пустили наружу
+  uint32 min_confidence = 3;
+}
+
+message PutUpstreamRequest {
+  UpstreamSource source = 1;
+}
+
+message RemoveUpstreamRequest {
+  string id = 1;
+}
+
+message EnableUpstreamsRequest {
+  bool enabled = 1;
+}

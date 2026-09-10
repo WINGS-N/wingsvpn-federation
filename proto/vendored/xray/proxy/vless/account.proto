@@ -1,0 +1,13 @@
+// Vendored from XTLS/Xray-core proxy/vless/account.proto (WINGS-N fork).
+// Only the fields a federation profile sets; the rest stay at their defaults
+syntax = "proto3";
+
+package xray.proxy.vless;
+
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+
+message Account {
+  string id = 1;
+  string flow = 2;
+  string encryption = 3;
+}

@@ -1,0 +1,19 @@
+{{- if and .Values.certificate.enabled .Values.ingress.enabled }}
+# Issued explicitly rather than by an annotation on the Ingress, so the
+# certificate outlives any one route that happens to reference it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" (include "head.name" .)) }}
+  namespace: {{ include "head.namespace" . }}
+spec:
+  secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" (include "head.name" .)) }}
+  issuerRef:
+    kind: {{ .Values.certificate.issuerRef.kind }}
+    name: {{ required "certificate.issuerRef.name is required" .Values.certificate.issuerRef.name }}
+  dnsNames:
+    - {{ required "ingress.host is required when the ingress is enabled" .Values.ingress.host | quote }}
+{{- range .Values.certificate.extraDNSNames }}
+    - {{ . | quote }}
+{{- end }}
+{{- end }}

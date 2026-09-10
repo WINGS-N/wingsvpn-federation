@@ -1,0 +1,59 @@
+{{- if .Values.behindProxy.enabled }}
+# 443 на этих хостах держит ingress, поэтому Xray стоит за ним, а не рядом.
+#
+# Passthrough, а не терминация: REALITY изображает TLS к чужому сайту, и прокси,
+# который распакует и переупакует хендшейк, сломает ровно то, ради чего REALITY
+# существует. Traefik здесь только смотрит на SNI и отдаёт сырой TCP дальше.
+#
+# PROXY protocol обязателен. Без него Xray видит адрес прокси вместо клиента, и
+# GetStatsOnlineIpList перестаёт отличать одного человека от сорока - детект
+# расшаренных профилей не падает с ошибкой, он молча начинает врать.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "node.name" . }}-local
+  namespace: {{ include "node.namespace" . }}
+spec:
+  # internalTrafficPolicy: Local - соединение обязано остаться на той же машине.
+  # Это не оптимизация: у каждой ноды свой dest, и Traefik, отдавший соединение
+  # соседу, привёл бы клиента к Xray, который изображает совсем другой сайт -
+  # хендшейк развалится.
+  #
+  # ExternalName на localhost был бы короче, но Traefik по умолчанию их не
+  # обслуживает (allowExternalNameServices=false), и включать это ради одного
+  # сервиса - трогать общий ingress всего кластера.
+  internalTrafficPolicy: Local
+  selector:
+    app: {{ include "node.name" . }}
+  ports:
+    - name: reality
+      port: {{ .Values.behindProxy.localPort }}
+      targetPort: {{ .Values.behindProxy.localPort }}
+{{- if .Values.behindProxy.manageRoute }}
+---
+# Список SNI держит голова: dest у каждой ноды свой и меняется, а записанный
+# сюда руками протухает на первой же смене. Оставлять этот объект чарту стоит
+# только там, где головы рядом нет
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: {{ include "node.name" . }}-reality
+  namespace: {{ include "node.namespace" . }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+{{- range .Values.behindProxy.serverNames }}
+    - match: HostSNI(`{{ . }}`)
+      services:
+        - name: {{ include "node.name" $ }}-local
+          port: {{ $.Values.behindProxy.localPort }}
+          # v2 потому, что v1 текстовый и не несёт TLV; Xray принимает оба
+          proxyProtocol:
+            version: 2
+{{- end }}
+  tls:
+    # Ничего не расшифровываем: сертификат тут не наш, он заимствован у dest
+    passthrough: true
+{{- end }}
+{{- end }}

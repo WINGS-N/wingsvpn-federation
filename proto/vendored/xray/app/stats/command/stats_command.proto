@@ -1,0 +1,51 @@
+// Vendored from XTLS/Xray-core app/stats/command/command.proto (WINGS-N fork).
+// QueryStats carries per-user traffic straight out of the core, which is why the
+// agent never parses an access log
+syntax = "proto3";
+
+package xray.app.stats.command;
+
+option go_package = "wingsnet.org/federation/gen/xraypb;xraypb";
+
+message GetStatsRequest {
+  string name = 1;
+  bool reset = 2;
+}
+
+message Stat {
+  string name = 1;
+  int64 value = 2;
+}
+
+message GetStatsResponse {
+  Stat stat = 1;
+}
+
+message QueryStatsRequest {
+  string pattern = 1;
+  bool reset = 2;
+}
+
+message QueryStatsResponse {
+  repeated Stat stat = 1;
+}
+
+message GetStatsOnlineIpListResponse {
+  string name = 1;
+  map<string, int64> ips = 2;
+}
+
+message GetAllOnlineUsersRequest {}
+
+message GetAllOnlineUsersResponse {
+  repeated string users = 1;
+}
+
+service StatsService {
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse) {}
+  rpc QueryStats(QueryStatsRequest) returns (QueryStatsResponse) {}
+  // One profile lighting up from forty addresses is profile sharing, and the
+  // core already knows it. Cheaper and less invasive than watching destinations
+  rpc GetStatsOnlineIpList(GetStatsRequest) returns (GetStatsOnlineIpListResponse) {}
+  rpc GetAllOnlineUsers(GetAllOnlineUsersRequest) returns (GetAllOnlineUsersResponse) {}
+}

@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "head.name" . }}
+  namespace: {{ include "head.namespace" . }}
+spec:
+  replicas: {{ .Values.replicas }}
+  # Активна всегда одна голова: она держит стримы всего флота и считает трафик в
+  # памяти. Кто именно активен, решает лиза в кластере, а вторая реплика ждёт
+  # горячим резервом и не проходит readiness, поэтому Service её не выбирает.
+  strategy:
+{{- if gt (int .Values.replicas) 1 }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+{{- else }}
+    type: Recreate
+{{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "head.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "head.name" . }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      serviceAccountName: {{ include "head.name" . }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: head
+          image: {{ include "head.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+{{ include "head.args" . | indent 12 }}
+          # Секреты приходят переменными, а не флагами. Kubernetes подставляет
+          # $(VAR) прямо в командную строку, а её видно в списке процессов на
+          # хосте - для пароля от базы и ключей флота это недопустимо. Бинарь
+          # читает WINGSV_FED_<ФЛАГ> для любого флага, так что это тот же
+          # контракт, просто без утечки в ps.
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: WINGSV_FED_FLEET_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "head.secretName" . }}
+                  key: FLEET_SECRET
+            - name: WINGSV_FED_PANEL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "head.secretName" . }}
+                  key: PANEL_SECRET
+{{- if .Values.postgres.enabled }}
+            - name: WINGSV_FED_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "head.name" . }}-dsn
+                  key: dsn
+{{- end }}
+{{- if .Values.head.probeSecret }}
+            # Зонды ходят своим ключом: до башки они добираются через ноды, и
+            # нода со флотским секретом читала бы их отчёты как свои
+            - name: WINGSV_FED_PROBE_SECRET
+              value: {{ .Values.head.probeSecret | quote }}
+{{- end }}
+{{- if .Values.head.labelKey }}
+            # Ключ разметчика. Нет ключа - разметка просто не заводится
+            - name: ANTHROPIC_API_KEY
+              value: {{ .Values.head.labelKey | quote }}
+{{- end }}
+          ports:
+            - name: agent
+              containerPort: {{ .Values.head.agentPort }}
+            - name: panel
+              containerPort: {{ .Values.head.panelPort }}
+            - name: sub
+              containerPort: {{ .Values.head.subPort }}
+            - name: provision
+              containerPort: {{ .Values.head.provisionPort }}
+{{- if .Values.head.probeSecret }}
+            - name: probe
+              containerPort: {{ .Values.head.probePort }}
+{{- end }}
+          # The agent and panel ports speak tokenaead, which has no handshake and
+          # therefore nothing a probe could check without the secret. The
+          # subscription port is plain HTTP and answers for the whole process.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: sub
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: sub
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/wings/federation
+{{- if .Values.chain.enabled }}
+            # Ключ, которым башка подписывает публикацию эпох. Секретом, а не
+            # переменной: переменная утекает в ps и в первый же дамп процесса
+            - name: chain-key
+              mountPath: /var/lib/wings/federation/chain-key.json
+              subPath: chain-key.json
+              readOnly: true
+{{- end }}
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+{{- if .Values.chain.enabled }}
+        - name: chain-key
+          secret:
+            secretName: {{ .Values.chain.keySecret | default (printf "%s-chain-key" (include "head.name" .)) | quote }}
+            defaultMode: 0400
+{{- end }}
+        - name: state
+{{- if and .Values.persistence.enabled (eq (int .Values.replicas) 1) }}
+          persistentVolumeClaim:
+            claimName: {{ include "head.name" . }}-state
+{{- else }}
+          # Диск ReadWriteOnce не переживает вторую реплику, а состояние головы
+          # и так лежит в базе
+          emptyDir: {}
+{{- end }}
+{{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}
