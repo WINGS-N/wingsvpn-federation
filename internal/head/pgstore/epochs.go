@@ -119,6 +119,21 @@ func (e *EpochStore) Unpublished(limit int) ([]uint64, error) {
 	return out, nil
 }
 
+// Unpaid - опубликованные эпохи, по которым деньги дошли не до всех.
+//
+// Публикация и выплата это две разные транзакции: корень уезжает, а перевод
+// может отбиться о молчащий RPC. Без такого списка донор остаётся с корнем в
+// цепочке и пустым кошельком
+func (e *EpochStore) Unpaid(limit int) ([]uint64, error) {
+	var numbers []uint64
+	err := e.gdb.Model(&EpochRow{}).
+		Where("published_at IS NOT NULL").
+		Where(`(select count(*) from epoch_leaf_rows l where l.number = epoch_rows.number) >
+			(select count(*) from payout_tx_rows t where t.number = epoch_rows.number)`).
+		Order("number ASC").Limit(limit).Pluck("number", &numbers).Error
+	return numbers, err
+}
+
 // MarkPublished отмечает, что корень уехал в цепочку
 func (e *EpochStore) MarkPublished(number uint64, at time.Time, ref string) error {
 	res := e.gdb.Model(&EpochRow{}).Where("number = ?", number).

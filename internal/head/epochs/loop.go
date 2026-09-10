@@ -49,6 +49,7 @@ type Marks interface {
 // повтора не случится больше никогда: начисления посчитаны, а забрать их нечем
 type Pending interface {
 	Unpublished(limit int) ([]uint64, error)
+	Unpaid(limit int) ([]uint64, error)
 	Epoch(number uint64) (*payout.Epoch, error)
 }
 
@@ -140,6 +141,39 @@ func (l *Loop) retryUnpublished() {
 			continue
 		}
 		l.publish(epoch)
+	}
+	l.retryUnpaid()
+}
+
+// retryUnpaid добирает выплаты по эпохам, чей корень в цепочке уже лежит.
+// Повторный перевод по тому же листу программа отбивает сама, так что дважды
+// никому не уедет
+func (l *Loop) retryUnpaid() {
+	numbers, err := l.pending.Unpaid(retryBatch)
+	if err != nil {
+		if l.log != nil {
+			l.log("epochs: unpaid list unreadable: %v", err)
+		}
+		return
+	}
+	for _, number := range numbers {
+		epoch, err := l.pending.Epoch(number)
+		if err != nil {
+			if l.log != nil {
+				l.log("epochs: epoch %d unreadable: %v", number, err)
+			}
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+		paid, err := l.publisher.PayEveryone(ctx, epoch)
+		cancel()
+		if l.log != nil {
+			if err != nil {
+				l.log("epochs: epoch %d paid %d more, the rest failed: %v", number, paid, err)
+			} else if paid > 0 {
+				l.log("epochs: epoch %d paid out to %d donors", number, paid)
+			}
+		}
 	}
 }
 

@@ -87,6 +87,8 @@ func (e epochStore) Next() (uint64, error) { return e.store.Next() }
 
 func (e epochStore) Unpublished(limit int) ([]uint64, error) { return e.store.Unpublished(limit) }
 
+func (e epochStore) Unpaid(limit int) ([]uint64, error) { return e.store.Unpaid(limit) }
+
 // Epoch собирает закрытую эпоху обратно из базы, чтобы повторить публикацию.
 // Дерево пересчитывается из тех же листьев, поэтому корень выходит прежний
 func (e epochStore) Epoch(number uint64) (*payout.Epoch, error) {
