@@ -26,7 +26,7 @@ type Clock interface {
 
 // publishTimeout - сколько ждём цепочку. Публичный RPC умеет тупить, а держать
 // цикл эпох на нём вечно незачем
-const publishTimeout = 60 * time.Second
+const publishTimeout = 5 * time.Minute
 
 // Publisher уносит корень эпохи в цепочку и платит по нему донорам.
 //

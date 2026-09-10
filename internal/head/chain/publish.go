@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"wingsnet.org/federation/internal/head/payout"
 )
@@ -98,11 +99,40 @@ func (p *Publisher) Publish(ctx context.Context, epoch *payout.Epoch) (string, e
 	if err != nil {
 		return "", err
 	}
+	// Выплаты идут сразу за публикацией, а preflight у них считается на
+	// finalized. Не дождавшись финализации, каждый клейм отбивается о цепочку,
+	// которая про эпоху ещё не знает
+	if err := p.awaitFinal(ctx, signature); err != nil {
+		return "", err
+	}
 	if p.log != nil {
 		p.log("chain: epoch %d published as %s", epoch.Number, signature)
 	}
 	return signature, nil
 }
+
+// awaitFinal ждёт, пока цепочка признает транзакцию окончательной
+func (p *Publisher) awaitFinal(ctx context.Context, signature string) error {
+	ticker := time.NewTicker(finalPoll)
+	defer ticker.Stop()
+	for {
+		ok, err := p.client.Confirmed(ctx, signature)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("chain: %s was not finalised in time", signature)
+		case <-ticker.C:
+		}
+	}
+}
+
+// finalPoll - как часто спрашиваем цепочку про судьбу транзакции
+const finalPoll = 2 * time.Second
 
 // FindPDA считает адрес, который программа выведет у себя. Считаем сами, а не
 // храним: захардкоженный адрес однажды разъедется с программой
