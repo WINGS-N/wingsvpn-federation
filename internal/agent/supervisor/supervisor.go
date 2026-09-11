@@ -92,6 +92,10 @@ type Supervisor struct {
 	// запуска становится обычным, и нода выглядит так, будто навозила людям
 	probeCarry uint64
 	probeLast  uint64
+	// probeEmails - все учётки зондов, что стояли на ноде. Список профилей
+	// живёт ровно пока профиль на инбаунде, а счётчик ядра держит его и после
+	// снятия: забыв имя, мы записали бы чужие замеры в трафик донора
+	probeEmails map[string]struct{}
 	// profileLast - последние счётчики по каждому профилю. Башке уходят дельты:
 	// профиль живёт меньше ноды, и кумулятивная цифра по нему ничего не значит
 	// после того, как его сняли с инбаунда
@@ -491,6 +495,12 @@ func (s *Supervisor) ApplyProfiles(ctx context.Context, delta *fedpb.ProfileDelt
 			// a user the core already has is an error rather than a no-op
 			continue
 		}
+		if !p.Metered && p.Email != "" {
+			if s.probeEmails == nil {
+				s.probeEmails = map[string]struct{}{}
+			}
+			s.probeEmails[p.Email] = struct{}{}
+		}
 		s.profiles = append(s.profiles, p)
 		added = append(added, p)
 	}
@@ -608,11 +618,8 @@ func (s *Supervisor) Sample(ctx context.Context) (*fedpb.StatsSample, error) {
 			// Замеры зондов идут через собственный профиль. В общую статистику
 			// они входят, из бюджета донора вычитаются
 			var probe uint64
-			for _, p := range s.profiles {
-				if p.Metered {
-					continue
-				}
-				own := traffic.Users[p.Email]
+			for email := range s.probeEmails {
+				own := traffic.Users[email]
 				probe += own.Up + own.Down
 			}
 			s.xrayLast = traffic.Total
