@@ -276,6 +276,7 @@ func runHead(args []string) error {
 	// measurements run through
 	probeFleet := probes.New(reg, srv, srv.ConfigFor)
 	srv.SetProbeFleet(probeFleet.Targets, probeFleet.Ingest)
+	srv.SetPeerLimitsSource(alloc.PeerLimitsFor)
 
 	// The oracle scores, the enforcer acts, and the allocator obeys. Kept as
 	// three pieces because a wrong score is an opinion while a wrong revocation

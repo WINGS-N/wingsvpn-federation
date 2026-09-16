@@ -39,6 +39,27 @@ func (a *Allocator) peerKeys(userID, nodeID string) []string {
 	return keys
 }
 
+// PeerLimitsFor - потолки для всех пиров, выданных на этой ноде.
+//
+// Нужны при каждом подключении агента, а не только при выдаче профиля: карта
+// "адрес в туннеле - чей он" живёт у агента в памяти, и после его перезапуска
+// наблюдения с релея вешать не на кого. Нода при этом возит трафик и молча
+// выглядит ослепшей
+func (a *Allocator) PeerLimitsFor(nodeID string) []*fedpb.PeerLimit {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []*fedpb.PeerLimit
+	for userID, alloc := range a.state {
+		for key, p := range alloc.Profiles {
+			if node, _ := splitKey(key); node != nodeID {
+				continue
+			}
+			out = append(out, a.peerLimits(userID, nodeID, p.ID, p.DownlinkBps)...)
+		}
+	}
+	return out
+}
+
 // peerLimits - какие потолки поставить пирам человека на этой ноде
 func (a *Allocator) peerLimits(userID, nodeID, profileID string, downBps uint64) []*fedpb.PeerLimit {
 	if a.peers == nil {

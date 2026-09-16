@@ -76,7 +76,8 @@ type Server struct {
 	fleet Fleet
 	// profilesFor answers what a node should be serving. Set by the allocator;
 	// left nil the head simply never reconciles
-	profilesFor func(nodeID string) []*fedpb.ProfileSpec
+	profilesFor   func(nodeID string) []*fedpb.ProfileSpec
+	peerLimitsFor func(nodeID string) []*fedpb.PeerLimit
 	// probeTargets and probeIngest are the vantage-point half. Left nil the head
 	// accepts probe sessions and gives them nothing to do
 	probeTargets func() *fedpb.ProbeTask
@@ -179,6 +180,24 @@ func (s *Server) currentProfiles(nodeID string) ([]*fedpb.ProfileSpec, bool) {
 		return nil, false
 	}
 	return fn(nodeID), true
+}
+
+// currentPeerLimits - потолки пиров релея для этой ноды
+func (s *Server) currentPeerLimits(nodeID string) []*fedpb.PeerLimit {
+	s.mu.Lock()
+	fn := s.peerLimitsFor
+	s.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(nodeID)
+}
+
+// SetPeerLimitsSource говорит, где взять потолки пиров для ноды
+func (s *Server) SetPeerLimitsSource(fn func(nodeID string) []*fedpb.PeerLimit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peerLimitsFor = fn
 }
 
 // SetFleet attaches the operator's fleet-wide settings. Nil is fine: a head
@@ -494,6 +513,18 @@ func (s *Server) Session(stream fedpb.Federation_SessionServer) error {
 				if err := sess.send(&fedpb.HeadFrame{
 					Frame: &fedpb.HeadFrame_ProfileDelta{ProfileDelta: &fedpb.ProfileDelta{
 						Add: specs, Replace: true,
+					}},
+				}); err != nil {
+					return err
+				}
+			}
+			// Пиры релея тем же заходом: агент держит их в памяти, и после
+			// перезапуска он не знает, чей адрес в туннеле. Наблюдения с VK TURN
+			// тогда выбрасываются, а нода выглядит так, будто ослепла
+			if limits := s.currentPeerLimits(node.ID); len(limits) > 0 {
+				if err := sess.send(&fedpb.HeadFrame{
+					Frame: &fedpb.HeadFrame_ProfileDelta{ProfileDelta: &fedpb.ProfileDelta{
+						PeerLimits: limits,
 					}},
 				}); err != nil {
 					return err

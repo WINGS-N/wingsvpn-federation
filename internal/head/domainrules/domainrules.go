@@ -55,6 +55,16 @@ var systemNoise = []string{
 	"api.onesignal.com",
 	"cdn.samsungcloudsolution.com",
 	"connectivity.samsungcloudsolution.com",
+	// Через это ходит наш же транспорт VK TURN, и чужие списки регулярно
+	// заносят сюда всё подряд вместе с настоящим фишингом
+	"vk.ru",
+	"vk.com",
+	"vk-cdn.net",
+	"vkuser.net",
+	"vkuseraudio.net",
+	"userapi.com",
+	"ok.ru",
+	"mycdn.me",
 }
 
 // telemetry - сбор ошибок, аналитика и опрос котировок. Долбится ровным ритмом,
@@ -194,6 +204,13 @@ func DefaultRules() []Rule {
 	}
 }
 
+// feedMinHits - сколько раз надо сходить, чтобы чужой список стал обвинением.
+//
+// Одно обращение это перешедшая ссылка, реклама в приложении или сосед по CDN,
+// а не поведение. Списки к тому же ошибаются: под раздачу попадал внутренний
+// API вконтакте, через который ходит наш же VK TURN
+const feedMinHits = 3
+
 // Verdict - что разбор надумал по одному субъекту
 type Verdict struct {
 	SubjectID string
@@ -237,7 +254,7 @@ func ClassifyWithFeed(rules []Rule, feed Feed, sightings []Sighting) []Verdict {
 		if IsSystemNoise(domain) {
 			continue
 		}
-		if feed != nil {
+		if feed != nil && s.Count >= feedMinHits {
 			if kind, listed := feed.Kind(domain); listed {
 				add(s.SubjectID, kind, s.Count, domain)
 			}
