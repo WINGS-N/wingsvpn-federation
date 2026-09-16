@@ -61,6 +61,9 @@ func closed(ch chan struct{}) bool {
 }
 
 // Start launches Xray against the config already on disk
+// tailGrace - сколько ждём остатки stderr после выхода процесса
+const tailGrace = 300 * time.Millisecond
+
 func (p *Process) Start() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -81,9 +84,20 @@ func (p *Process) Start() error {
 	exited := make(chan struct{})
 	p.exited = exited
 
-	go p.readTail(stderr)
+	drained := make(chan struct{})
+	go func() {
+		p.readTail(stderr)
+		close(drained)
+	}()
 	go func() {
 		waitErr := cmd.Wait()
+		// Даём хвосту дочитаться: Wait закрывает пайп, и причина падения
+		// терялась ровно тогда, когда она нужнее всего. Ждём с оглядкой -
+		// убитый процесс мог оставить внука, который держит stderr открытым
+		select {
+		case <-drained:
+		case <-time.After(tailGrace):
+		}
 		p.mu.Lock()
 		p.lastErr = waitErr
 		p.mu.Unlock()
