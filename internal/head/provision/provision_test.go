@@ -45,6 +45,8 @@ type okProfiles struct{}
 
 func (okProfiles) VerifyProvision(string, []byte, string) bool { return true }
 
+func (okProfiles) NodeOfProfile(string) string { return "node-from-allocation" }
+
 // Второй заход релея обязан вернуть весь конфиг: релей отдаёт приложению именно
 // его, и пустой ответ доезжает до телефона туннелем без ключей
 func TestReportPassReturnsTheWholeConfig(t *testing.T) {

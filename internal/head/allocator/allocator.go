@@ -718,6 +718,30 @@ func (a *Allocator) VerifyProvision(clientID string, token []byte, nodeID string
 	return provision.Matches(secret, clientID, token)
 }
 
+// NodeOfProfile - на какой ноде выдан этот профиль.
+//
+// Релей своего идентификатора ноды не знает: он живёт у агента, а в провижне
+// приезжает пустая строка. Без привязки пир остаётся ничьим, и тогда ему не
+// поставить потолок скорости, не снять его карантином и не повесить на него
+// наблюдение с туннеля
+func (a *Allocator) NodeOfProfile(profileID string) string {
+	if profileID == "" {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, alloc := range a.state {
+		for key, p := range alloc.Profiles {
+			if p.ID != profileID {
+				continue
+			}
+			node, _ := splitKey(key)
+			return node
+		}
+	}
+	return ""
+}
+
 // TurnProfiles - профили VK TURN этого пользователя, по одному на ноду с релеем
 func (a *Allocator) TurnProfiles(userID, deviceID string) []TurnProfile {
 	a.mu.Lock()

@@ -541,7 +541,10 @@ func (s *Server) Session(stream fedpb.Federation_SessionServer) error {
 			// Релей с чужим бэкендом уносит расшифрованный трафик мимо
 			// наблюдения и мимо шейпера, поэтому это претензия к ноде, а не
 			// просто факт
-			if sink := s.relayModeSink(); sink != nil && beat.GetVktpState() != "unreachable" {
+			// Спрашиваем только тот релей, который реально отвечает. Нода без
+			// релея вообще сообщает "unknown", и обвинять её в том, что он
+			// не заперт, значит штрафовать за отсутствие того, чего нет
+			if sink := s.relayModeSink(); sink != nil && beat.GetVktpState() == "ready" {
 				sink(node.ID, beat.GetRelayFederation())
 			}
 		case *fedpb.AgentFrame_Stats:

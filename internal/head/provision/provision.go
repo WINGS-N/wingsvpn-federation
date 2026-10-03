@@ -22,6 +22,8 @@ import (
 // профиль правда выдан этой ноде
 type Profiles interface {
 	VerifyProvision(clientID string, token []byte, nodeID string) bool
+	// NodeOfProfile достаёт ноду из выдачи, когда релей её не назвал
+	NodeOfProfile(profileID string) string
 }
 
 // Peers запоминает, какой wg-ключ достался какому профилю.
@@ -104,7 +106,13 @@ func (s *Server) ResolveClientConfig(
 	// и рантайм падал на "WireGuard keys missing"
 	if key := strings.TrimSpace(req.GetWgPublicKey()); key != "" {
 		if s.peers != nil {
-			if err := s.peers.Remember(clientID, req.GetNodeId(), key, req.GetWgAllowedIps()); err != nil {
+			// Ноду берём из выдачи, раз релей её не знает: пустая строка здесь
+			// означала пира, которого потом не найти ни по ноде, ни по профилю
+			nodeID := strings.TrimSpace(req.GetNodeId())
+			if nodeID == "" {
+				nodeID = s.profiles.NodeOfProfile(clientID)
+			}
+			if err := s.peers.Remember(clientID, nodeID, key, req.GetWgAllowedIps()); err != nil {
 				log.Printf("provision: peer of %s not remembered: %v", clientID, err)
 			}
 		}
