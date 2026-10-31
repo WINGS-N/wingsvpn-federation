@@ -227,3 +227,23 @@ func TestQuotaFollowsConfidence(t *testing.T) {
 		t.Fatal("подозрительный остался без потолка")
 	}
 }
+
+// В режиме без выплат отсутствие расписок не наказывается: клиент их не
+// подписывает законно, и старые NO_RECEIPTS из платного прошлого весят ноль.
+func TestNoReceiptsScorerIgnoresReceiptSignals(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	signal := Signal{
+		ClientID: "user-1",
+		Kind:     fedpb.AbuseKind_ABUSE_KIND_NO_RECEIPTS,
+		Count:    1,
+		Observed: now,
+	}
+	paid := NewRulesScorer().Score("user-1", []Signal{signal}, now)
+	if paid.Confidence >= StartingConfidence {
+		t.Fatalf("платный режим не наказал за NO_RECEIPTS: %d", paid.Confidence)
+	}
+	free := NewRulesScorerNoReceipts().Score("user-1", []Signal{signal}, now)
+	if free.Confidence != StartingConfidence {
+		t.Fatalf("режим без выплат наказал за NO_RECEIPTS: %d, ждали %d", free.Confidence, StartingConfidence)
+	}
+}

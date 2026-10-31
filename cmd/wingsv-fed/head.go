@@ -286,7 +286,13 @@ func runHead(args []string) error {
 	// The oracle scores, the enforcer acts, and the allocator obeys. Kept as
 	// three pieces because a wrong score is an opinion while a wrong revocation
 	// is a user with no internet
-	judge := oracle.NewJudge(oracle.NewRulesScorer())
+	// Без выплат отсутствие расписок не нарушение: клиент их и не подписывает.
+	// Старые NO_RECEIPTS из платного прошлого тогда тоже весят ноль
+	scorer := oracle.NewRulesScorer()
+	if !*payouts {
+		scorer = oracle.NewRulesScorerNoReceipts()
+	}
+	judge := oracle.NewJudge(scorer)
 	if db != nil {
 		judge.SetSink(pgstore.NewOracleStore(db.Gorm()))
 		if err := judge.Restore(time.Now().Add(-oracle.RetainWindow)); err != nil {

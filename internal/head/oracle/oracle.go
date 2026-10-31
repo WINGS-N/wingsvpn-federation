@@ -157,6 +157,15 @@ type RulesScorer struct {
 // NewRulesScorer builds a scorer with the default weights
 func NewRulesScorer() *RulesScorer { return &RulesScorer{Weights: DefaultWeights()} }
 
+// NewRulesScorerNoReceipts is the scorer for the no-payout mode: the client
+// legitimately does not sign receipts, so their absence carries no penalty.
+// Restored NO_RECEIPTS signals from a paid past then score zero as well.
+func NewRulesScorerNoReceipts() *RulesScorer {
+	w := DefaultWeights()
+	delete(w, fedpb.AbuseKind_ABUSE_KIND_NO_RECEIPTS)
+	return &RulesScorer{Weights: w}
+}
+
 // Name identifies this scorer in a verdict
 func (r *RulesScorer) Name() string { return "rules-v1" }
 
