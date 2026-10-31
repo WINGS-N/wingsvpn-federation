@@ -91,6 +91,9 @@ an operator what is actually running.
 - -donation-gb
 - {{ .Values.head.donationGB | quote }}
 {{- end }}
+{{- if .Values.head.payouts }}
+- -payouts
+{{- end }}
 {{- if .Values.head.payoutMicroPerGiB }}
 - -payout-micro-per-gib
 - {{ .Values.head.payoutMicroPerGiB | quote }}
