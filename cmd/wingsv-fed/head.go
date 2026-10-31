@@ -105,6 +105,11 @@ func runHead(args []string) error {
 		"where the relays ask which client to mint a wg peer for; empty disables VK TURN")
 	leaseName := fs.String("lease", "wingsv-fed-head", "name of the k8s lease that keeps one head active")
 	requireProbe := fs.Bool("require-probe", false, "hand out only addresses a vantage point has confirmed")
+	// Основной режим федерации - без выплат: клиенты не подписывают расписки,
+	// честность нод не проверяется, а их собственная стата становится опорной,
+	// потому что врать о трафике уже незачем. Деньги включает оператор явно.
+	payouts := fs.Bool("payouts", false,
+		"run the paid federation: clients sign receipts, nodes are audited for honesty, epochs accrue")
 	// Ноль означает, что выплаты не настроены и эпохи не закрываются вовсе:
 	// считать деньги по случайно оставшейся в коде ставке нельзя
 	payoutRate := fs.Uint64("payout-micro-per-gib", 0,
@@ -253,7 +258,7 @@ func runHead(args []string) error {
 	}
 	if dest != "" {
 		srv.SetNodeConfig(current.Apply(
-			defaultNodeConfig(dest, current.TCPPort, current.XHTTPPort, postQuantum)))
+			defaultNodeConfig(dest, current.TCPPort, current.XHTTPPort, postQuantum, *payouts)))
 	}
 	if *candidates != "" {
 		srv.SetRealityCandidates(strings.Split(*candidates, ","))
@@ -298,10 +303,14 @@ func runHead(args []string) error {
 	// другие, а врать о трафике ноде выгоднее всех
 	nodeJudge := nodetrust.NewJudge()
 	// Нода обязана стучать, куда ходят её клиенты: ослепшая нода это либо старый
-	// агент, либо донор, спрятавший ферму
-	watchAudit := nodetrust.NewWatchAudit(nodeJudge)
-	watchAudit.SetLogger(log.Printf)
-	srv.SetRelayModeSink(watchAudit.ObserveRelayMode)
+	// агент, либо донор, спрятавший ферму. Проверка нужна только когда есть
+	// выплаты - без них ноде незачем врать, и её стата опорная
+	var watchAudit *nodetrust.WatchAudit
+	if *payouts {
+		watchAudit = nodetrust.NewWatchAudit(nodeJudge)
+		watchAudit.SetLogger(log.Printf)
+		srv.SetRelayModeSink(watchAudit.ObserveRelayMode)
+	}
 	// Клиент говорит свой адрес сам, ноды присылают отпечатки того, что видят
 	var addressBook *intake.AddressBook
 	// Домены пишутся сырьём и живут ограниченный срок. На одних классах никакую
@@ -309,7 +318,9 @@ func runHead(args []string) error {
 	if db != nil {
 		domains := pgstore.NewDomainStore(db.Gorm(), alloc.UserForProfile)
 		srv.SetDomainSink(func(batch *fedpb.DomainBatch, nodeID string) {
-			watchAudit.ObserveDomains(nodeID)
+			if watchAudit != nil {
+				watchAudit.ObserveDomains(nodeID)
+			}
 			if addressBook != nil {
 				addressBook.Record(batch)
 			}
@@ -457,7 +468,7 @@ func runHead(args []string) error {
 	// счётчики нода рисует сама, и платить по ним значит платить за воздух
 	var intakeSrv *intake.Server
 	var receiptReconciler *intake.Reconciler
-	if receipts != nil {
+	if *payouts && receipts != nil {
 		intakeSrv = intake.New(receipts, receipts)
 		// Расходятся - значит поверх нашего туннеля крутится ещё один или
 		// профилем пользуется не он
@@ -537,7 +548,7 @@ func runHead(args []string) error {
 	}
 	// Судить надо обе стороны. Нода тоже умеет пиздеть: завысить трафик ради
 	// выплаты, светить зелёным здоровьем и не везти при этом нихуя
-	if receipts != nil {
+	if *payouts && receipts != nil {
 		auditor := nodetrust.NewAuditor(srv.Aggregator(), receipts, reg, nodeJudge, log.Printf)
 		// Платим строго за байты, а значит появляется смысл гонять трафик через
 		// себя же: нода, весь объём которой висит на паре подписей, это ровно
@@ -550,22 +561,24 @@ func runHead(args []string) error {
 		panelSrv.SetInviteTree(tree)
 		go leader.WhileLeading(ctx, elector, auditor.Run)
 	}
-	go leader.WhileLeading(ctx, elector, func(ctx context.Context) {
-		tick := time.NewTicker(nodetrust.WatchSweepEvery)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				totals, err := srv.Aggregator().NodeTraffic(time.Now())
-				if err != nil {
-					continue
+	if watchAudit != nil {
+		go leader.WhileLeading(ctx, elector, func(ctx context.Context) {
+			tick := time.NewTicker(nodetrust.WatchSweepEvery)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					totals, err := srv.Aggregator().NodeTraffic(time.Now())
+					if err != nil {
+						continue
+					}
+					watchAudit.Sweep(totals)
 				}
-				watchAudit.Sweep(totals)
 			}
-		}
-	})
+		})
+	}
 	// Купленные подписки: заводит их владелец, и по умолчанию всё это выключено.
 	// За чужим сервером наш Oracle слеп, поэтому решение раздавать принимает
 	// человек, а не код по факту своего наличия
@@ -603,7 +616,7 @@ func runHead(args []string) error {
 	}
 	// Деньги считаются только там, где есть база: эпоху надо пережить рестарт,
 	// а файлам такое не доверяют
-	if db != nil && *payoutRate > 0 {
+	if *payouts && db != nil && *payoutRate > 0 {
 		store := epochStore{pgstore.NewEpochStore(db.Gorm())}
 		collector := epochs.NewCollector(
 			payoutFleet{reg}, srv.Aggregator(), receipts, trustFactor{nodeJudge},
@@ -775,7 +788,7 @@ func runHead(args []string) error {
 			Notify: func() {
 				s := fleetMgr.Settings()
 				srv.SetNodeConfig(s.Apply(
-					defaultNodeConfig(s.RealityDest, s.TCPPort, s.XHTTPPort, s.PostQuantum)))
+					defaultNodeConfig(s.RealityDest, s.TCPPort, s.XHTTPPort, s.PostQuantum, *payouts)))
 			},
 		})
 		go leader.WhileLeading(ctx, elector, watcher.Run)
@@ -789,7 +802,7 @@ func runHead(args []string) error {
 			republish: func() {
 				s := fleetMgr.Settings()
 				srv.SetNodeConfig(s.Apply(
-					defaultNodeConfig(s.RealityDest, s.TCPPort, s.XHTTPPort, s.PostQuantum)))
+					defaultNodeConfig(s.RealityDest, s.TCPPort, s.XHTTPPort, s.PostQuantum, *payouts)))
 			},
 		}, log.Printf)
 		go leader.WhileLeading(ctx, elector, rescuer.Run)
@@ -1037,13 +1050,14 @@ func startPanelServer(listen, secret string, srv *headserver.Server, intakeSrv *
 // defaultNodeConfig is the one config every node serves until per-node
 // assignment lands. Vision on tcp and empty flow on xhttp is not a style choice:
 // VLESS refuses a vision account whose client sent an empty flow
-func defaultNodeConfig(dest string, tcpPort, xhttpPort uint32, postQuantum bool) *fedpb.NodeConfig {
+func defaultNodeConfig(dest string, tcpPort, xhttpPort uint32, postQuantum, receiptsRequired bool) *fedpb.NodeConfig {
 	host := dest
 	if h, _, err := net.SplitHostPort(dest); err == nil {
 		host = h
 	}
 	return &fedpb.NodeConfig{
-		Version: 1,
+		Version:          1,
+		ReceiptsRequired: receiptsRequired,
 		Reality: &fedpb.RealityIdentity{
 			Dest:        dest,
 			ServerNames: []string{host},

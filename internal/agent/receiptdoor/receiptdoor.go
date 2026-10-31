@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	fedpb "wingsnet.org/federation/gen/fedpb"
@@ -70,6 +71,9 @@ type Door struct {
 	// hits - сколько раз стучали с адреса за окно
 	hits map[string]*rateCounter
 	now  func() time.Time
+	// enabled: дверь принимает расписки только в платном режиме. Выключена -
+	// отвечает 410, и клиент перестаёт слать
+	enabled atomic.Bool
 }
 
 type rateCounter struct {
@@ -83,6 +87,10 @@ func New() *Door {
 
 // SetLogger включает журнал
 func (d *Door) SetLogger(fn func(string, ...any)) { d.log = fn }
+
+// SetEnabled переключает приём расписок. Приходит из NodeConfig головы: в
+// основном режиме без выплат расписки не нужны
+func (d *Door) SetEnabled(on bool) { d.enabled.Store(on) }
 
 // Drain отдаёт накопленное и очищает очередь. Зовёт сессия агента
 func (d *Door) Drain() []*fedpb.TrafficReceipt {
@@ -128,6 +136,12 @@ func (d *Door) listen(ctx context.Context, address string, handler http.Handler)
 }
 
 func (d *Door) handle(w http.ResponseWriter, r *http.Request) {
+	if !d.enabled.Load() {
+		// Режим без выплат: расписки не нужны. 410 говорит клиенту бросить
+		// очередь и не слать больше
+		http.Error(w, "receipts off", http.StatusGone)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "post only", http.StatusMethodNotAllowed)
 		return

@@ -12,6 +12,8 @@ import (
 
 func post(t *testing.T, door *Door, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	door.SetEnabled(true)
+	t.Helper()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/receipts", strings.NewReader(body))
 	door.handle(rec, req)
@@ -54,6 +56,7 @@ func TestGarbageIsDropped(t *testing.T) {
 // Чужой метод и битое тело дверь отбивает, а не падает
 func TestBadRequestsAreRefused(t *testing.T) {
 	door := New()
+	door.SetEnabled(true)
 	rec := httptest.NewRecorder()
 	door.handle(rec, httptest.NewRequest(http.MethodGet, "/receipts", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -68,6 +71,7 @@ func TestBadRequestsAreRefused(t *testing.T) {
 // честные подписи
 func TestFloodDoesNotEvictHonestReceipts(t *testing.T) {
 	door := New()
+	door.SetEnabled(true)
 	door.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 	signature := base64.StdEncoding.EncodeToString([]byte("подпись"))
 
@@ -127,5 +131,24 @@ func TestHammeringIsThrottled(t *testing.T) {
 	at = at.Add(2 * rateWindow)
 	if !door.allow("10.67.66.5:40000") {
 		t.Fatal("окно не открылось заново")
+	}
+}
+
+// По умолчанию дверь закрыта: основной режим федерации без выплат, расписки
+// не нужны. Клиент получает 410 и бросает очередь.
+func TestDisabledDoorRefusesWith410(t *testing.T) {
+	door := New()
+	rec := httptest.NewRecorder()
+	door.handle(rec, httptest.NewRequest(http.MethodPost, "/receipts",
+		strings.NewReader(`{"receipts":[]}`)))
+	if rec.Code != http.StatusGone {
+		t.Fatalf("закрытая дверь ответила %d, ждали 410", rec.Code)
+	}
+	door.SetEnabled(true)
+	rec = httptest.NewRecorder()
+	door.handle(rec, httptest.NewRequest(http.MethodPost, "/receipts",
+		strings.NewReader(`{"receipts":[]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("открытая дверь ответила %d, ждали 200", rec.Code)
 	}
 }

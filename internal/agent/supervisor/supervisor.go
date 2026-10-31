@@ -210,6 +210,11 @@ func (s *Supervisor) ApplyConfig(ctx context.Context, cfg *fedpb.NodeConfig) ([]
 	// как съедал релей
 	s.openConfiguredPorts(ctx, cfg)
 	s.version = cfg.GetVersion()
+	// Приём расписок включает голова конфигом: в основном режиме без выплат они
+	// не нужны, и дверь отвечает клиентам 410
+	if s.receipts != nil {
+		s.receipts.SetEnabled(cfg.GetReceiptsRequired())
+	}
 	if err := saveAppliedVersion(s.appliedPath(), s.version); err != nil {
 		log.Printf("supervisor: could not record applied config version: %v", err)
 	}

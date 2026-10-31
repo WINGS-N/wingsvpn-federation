@@ -1758,9 +1758,13 @@ type NodeConfig struct {
 	// Ставить новую сборку самому, как только она приехала в конфиге. Выключено -
 	// нода сообщает о расхождении и ждёт явной команды: перезапуск Xray рвёт живые
 	// соединения, и на чужом сервере это решение не наше.
-	AutoUpgrade   bool `protobuf:"varint,10,opt,name=auto_upgrade,json=autoUpgrade,proto3" json:"auto_upgrade,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AutoUpgrade bool `protobuf:"varint,10,opt,name=auto_upgrade,json=autoUpgrade,proto3" json:"auto_upgrade,omitempty"`
+	// Принимать от клиентов расписки о трафике. Основной режим федерации без
+	// выплат: расписки не нужны, нода не открывает дверь приёма, а клиенты их не
+	// подписывают. Включается только в платном режиме.
+	ReceiptsRequired bool `protobuf:"varint,11,opt,name=receipts_required,json=receiptsRequired,proto3" json:"receipts_required,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *NodeConfig) Reset() {
@@ -1859,6 +1863,13 @@ func (x *NodeConfig) GetVktpBuild() *BinarySpec {
 func (x *NodeConfig) GetAutoUpgrade() bool {
 	if x != nil {
 		return x.AutoUpgrade
+	}
+	return false
+}
+
+func (x *NodeConfig) GetReceiptsRequired() bool {
+	if x != nil {
+		return x.ReceiptsRequired
 	}
 	return false
 }
@@ -5003,7 +5014,7 @@ const file_federation_proto_rawDesc = "" +
 	"\n" +
 	"LimitsSpec\x12!\n" +
 	"\fmax_sessions\x18\x01 \x01(\rR\vmaxSessions\x12+\n" +
-	"\x12rate_bytes_per_sec\x18\x02 \x01(\x04R\x0frateBytesPerSec\"\xb1\x04\n" +
+	"\x12rate_bytes_per_sec\x18\x02 \x01(\x04R\x0frateBytesPerSec\"\xde\x04\n" +
 	"\n" +
 	"NodeConfig\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x04R\aversion\x12?\n" +
@@ -5018,7 +5029,8 @@ const file_federation_proto_rawDesc = "" +
 	"\n" +
 	"vktp_build\x18\t \x01(\v2 .wingsv.federation.v1.BinarySpecR\tvktpBuild\x12!\n" +
 	"\fauto_upgrade\x18\n" +
-	" \x01(\bR\vautoUpgrade\"P\n" +
+	" \x01(\bR\vautoUpgrade\x12+\n" +
+	"\x11receipts_required\x18\v \x01(\bR\x10receiptsRequired\"P\n" +
 	"\n" +
 	"BinarySpec\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x10\n" +
