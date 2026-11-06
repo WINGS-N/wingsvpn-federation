@@ -102,17 +102,18 @@ func TestSourceIsNotHandedOutBeyondItsCap(t *testing.T) {
 	pool.sources["s1"].Links = []string{vless, strings.Replace(vless, "uuid-1", "uuid-2", 1)}
 
 	assigner := NewAssigner(pool)
-	if got := assigner.For("user-1"); len(got) != 1 {
-		t.Fatal("первому источник не достался")
+	// Потолок считает людей на источнике, а сам источник достаётся целиком
+	if got := assigner.For("user-1"); len(got) != 2 {
+		t.Fatalf("первому источник достался не целиком: %d", len(got))
 	}
-	if got := assigner.For("user-2"); len(got) != 1 {
-		t.Fatal("второму источник не достался")
+	if got := assigner.For("user-2"); len(got) != 2 {
+		t.Fatalf("второму источник достался не целиком: %d", len(got))
 	}
 	if got := assigner.For("user-3"); len(got) != 0 {
 		t.Fatal("третий пролез за потолок тарифа")
 	}
 	// Уже закреплённый человек своё не теряет
-	if got := assigner.For("user-1"); len(got) != 1 {
+	if got := assigner.For("user-1"); len(got) != 2 {
 		t.Fatal("закрепление сорвалось на повторном заходе")
 	}
 }
@@ -132,8 +133,13 @@ func TestAssignmentIsStable(t *testing.T) {
 	assigner := NewAssigner(pool)
 	first := assigner.For("user-1")
 	second := assigner.For("user-1")
-	if len(first) != 1 || first[0].Raw != second[0].Raw {
-		t.Fatal("человеку выдали разные серверы на двух заходах")
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("источник пришёл не целиком: %d и %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i].Raw != second[i].Raw {
+			t.Fatal("набор серверов разъехался между двумя заходами")
+		}
 	}
 }
 
@@ -338,16 +344,18 @@ func TestServerNameCarriesTheVendor(t *testing.T) {
 	pool.sources["s1"].Links = []string{vless, strings.Replace(vless, "uuid-1", "uuid-2", 1)}
 
 	got := NewAssigner(pool).For("user-1")
-	if len(got) != 1 {
+	if len(got) != 2 {
 		t.Fatalf("ссылок %d", len(got))
 	}
-	if !strings.HasPrefix(got[0].Name, "Вендор") {
-		t.Fatalf("имя не называет вендора: %s", got[0].Name)
-	}
-	fragment := got[0].Raw[strings.LastIndex(got[0].Raw, "#")+1:]
-	decoded, err := url.PathUnescape(fragment)
-	if err != nil || decoded != got[0].Name {
-		t.Fatalf("имя не подставилось в саму ссылку: %s", got[0].Raw)
+	for _, link := range got {
+		if !strings.HasPrefix(link.Name, "Вендор") {
+			t.Fatalf("имя не называет вендора: %s", link.Name)
+		}
+		fragment := link.Raw[strings.LastIndex(link.Raw, "#")+1:]
+		decoded, err := url.PathUnescape(fragment)
+		if err != nil || decoded != link.Name {
+			t.Fatalf("имя не подставилось в саму ссылку: %s", link.Raw)
+		}
 	}
 }
 
@@ -512,5 +520,53 @@ func TestEnableSurvivesRestart(t *testing.T) {
 	}
 	if again.Enabled() {
 		t.Fatal("выключенная раздача воскресла")
+	}
+}
+
+// Человек платит за подписку, а не за один её сервер: источник приходит целиком
+func TestSourceIsHandedOutWhole(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Enable(true)
+	if err := pool.Put(Source{ID: "s1", Vendor: "Куплено", URL: "https://example.org/sub", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	links := []string{
+		vless,
+		strings.Replace(vless, "uuid-1", "uuid-2", 1),
+		strings.Replace(vless, "uuid-1", "uuid-3", 1),
+		strings.Replace(vless, "uuid-1", "uuid-4", 1),
+	}
+	pool.sources["s1"].Links = links
+
+	got := NewAssigner(pool).For("user-1")
+	if len(got) != len(links) {
+		t.Fatalf("ссылок %d, в источнике %d", len(got), len(links))
+	}
+	// Имена внутри источника различаются, иначе в списке будет четыре одинаковых строки
+	seen := make(map[string]bool, len(got))
+	for _, link := range got {
+		if seen[link.Name] {
+			t.Fatalf("имя повторилось: %s", link.Name)
+		}
+		seen[link.Name] = true
+	}
+}
+
+// Порог доверия: ниже него купленное не отдаётся вовсе, свои ноды при этом остаются
+func TestUpstreamNeedsTrust(t *testing.T) {
+	pool := NewPool(nil, nil)
+	pool.Enable(true)
+	if err := pool.Put(Source{ID: "s1", URL: "https://example.org/sub", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	pool.sources["s1"].Links = []string{vless}
+
+	assigner := NewAssigner(pool)
+	assigner.SetTrust(onlyTrusted{"clean": true})
+	if got := assigner.For("clean"); len(got) != 1 {
+		t.Fatalf("чистому не досталось: %d", len(got))
+	}
+	if got := assigner.For("dirty"); len(got) != 0 {
+		t.Fatal("купленное ушло тому, кому не доверяют")
 	}
 }

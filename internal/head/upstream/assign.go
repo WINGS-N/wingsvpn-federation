@@ -1,8 +1,6 @@
 package upstream
 
 import (
-	"crypto/sha512"
-	"encoding/binary"
 	"fmt"
 	"net/url"
 	"sort"
@@ -90,16 +88,25 @@ func (a *Assigner) For(subjectID string) []Link {
 		if !a.holdLocked(source, subjectID, now) {
 			continue
 		}
-		// Ссылку внутри источника закрепляем за человеком отпечатком: у
-		// подписки их обычно несколько, и каждому нужна своя, а не первая
-		at := pick(subjectID, source.ID, len(source.Links))
-		name := nameFor(source, at)
-		out = append(out, Link{
-			SourceID: source.ID,
-			Vendor:   source.Vendor,
-			Name:     name,
-			Raw:      Rename(source.Links[at], name),
-		})
+		// Источник отдаётся целиком: человек платит за подписку, а не за один
+		// её сервер, и выбирать из списка он должен сам
+		//
+		// Продавец нередко зовёт свои серверы одинаково, и без номера человек
+		// получил бы десяток строк с одним именем
+		used := make(map[string]int, len(source.Links))
+		for at := range source.Links {
+			name := nameFor(source, at)
+			used[name]++
+			if n := used[name]; n > 1 {
+				name = fmt.Sprintf("%s %d", name, n)
+			}
+			out = append(out, Link{
+				SourceID: source.ID,
+				Vendor:   source.Vendor,
+				Name:     name,
+				Raw:      Rename(source.Links[at], name),
+			})
+		}
 	}
 	return out
 }
@@ -175,16 +182,6 @@ func (a *Assigner) holdLocked(source Source, subjectID string, now time.Time) bo
 	return true
 }
 
-// pick выбирает ссылку внутри источника устойчиво к перезапуску: случайный
-// выбор менял бы человеку сервер на каждом обновлении подписки
-func pick(subjectID, sourceID string, n int) int {
-	if n <= 1 {
-		return 0
-	}
-	sum := sha512.Sum512_256([]byte(subjectID + "|" + sourceID))
-	return int(binary.BigEndian.Uint32(sum[:4]) % uint32(n))
-}
-
 // Rename подставляет в ссылку наше имя сервера.
 //
 // Продавец пишет туда своё, и в списке у человека это выглядит как посторонний
@@ -212,11 +209,10 @@ func escapeFragment(name string) string {
 
 // MinConfidence - ниже этого за пределы своего флота не пускаем.
 //
-// Планка нарочно почти под потолок: на купленном сервере нашего агента нет, и
-// Oracle там не видит ни доменов, ни отпечатков, ни сверки объёма. Значит
-// человек должен быть чист ДО того, как уйдёт в слепую зону, а не выясняться
-// потом по жалобе продавца
-const MinConfidence = 95
+// Планка высокая: на купленном сервере нашего агента нет, и Oracle там не видит
+// ни доменов, ни отпечатков, ни сверки объёма. Значит человек должен быть чист
+// ДО того, как уйдёт в слепую зону, а не выясняться потом по жалобе продавца
+const MinConfidence = 70
 
 // Verdicts - откуда берётся доверие. Узкий интерфейс нарочно: раздаче
 // купленного незачем знать про Oracle целиком
