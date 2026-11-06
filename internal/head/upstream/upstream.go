@@ -31,6 +31,10 @@ import (
 // сообщения об ошибке
 const refreshEvery = 30 * time.Minute
 
+// newSourceEvery - как часто ищем только что заведённые подписки. Человек
+// добавил источник и ждёт ссылок, а не следующего получасового обхода
+const newSourceEvery = time.Minute
+
 // fetchTimeout - дольше ждать нечего, подписка это несколько килобайт
 const fetchTimeout = 20 * time.Second
 
@@ -211,6 +215,7 @@ func (p *Pool) persist() error {
 
 // Refresh перечитывает все включённые источники
 func (p *Pool) Refresh(ctx context.Context) {
+	p.reload()
 	if !p.Enabled() {
 		// Рубильник выключен - к продавцу не ходим вовсе: лишний запрос это
 		// лишний след с нашего адреса
@@ -244,15 +249,88 @@ func (p *Pool) Refresh(ctx context.Context) {
 // Run перечитывает по расписанию
 func (p *Pool) Run(ctx context.Context) {
 	p.Refresh(ctx)
-	ticker := time.NewTicker(refreshEvery)
-	defer ticker.Stop()
+	full := time.NewTicker(refreshEvery)
+	defer full.Stop()
+	fresh := time.NewTicker(newSourceEvery)
+	defer fresh.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-full.C:
 			p.Refresh(ctx)
+		case <-fresh.C:
+			p.refreshNew(ctx)
 		}
+	}
+}
+
+// reload поднимает набор источников из базы. Реплик у башки несколько, правка
+// приходит в любую из них, а обход идёт только на лидере - без этого он так
+// своей памятью и остался бы
+func (p *Pool) reload() {
+	if p.store == nil {
+		return
+	}
+	sources, err := p.store.Load()
+	if err != nil {
+		if p.log != nil {
+			p.log("upstream: sources unreadable: %v", err)
+		}
+		return
+	}
+	on, err := p.store.LoadEnabled()
+	if err != nil {
+		if p.log != nil {
+			p.log("upstream: the switch is unreadable: %v", err)
+		}
+		return
+	}
+	next := make(map[string]*Source, len(sources))
+	for i := range sources {
+		source := sources[i]
+		next[source.ID] = &source
+	}
+	p.mu.Lock()
+	p.sources = next
+	p.enabled = on
+	p.mu.Unlock()
+}
+
+// refreshNew читает только то, что ещё ни разу не читалось: заведённую минуту
+// назад подписку, а не весь список у продавца
+func (p *Pool) refreshNew(ctx context.Context) {
+	p.reload()
+	if !p.Enabled() {
+		return
+	}
+	var fetched bool
+	for _, source := range p.List() {
+		if !source.Enabled || len(source.Links) > 0 || source.LastError != "" {
+			continue
+		}
+		links, err := p.fetch(ctx, source)
+		p.mu.Lock()
+		if stored, ok := p.sources[source.ID]; ok {
+			stored.FetchedAt = p.now()
+			if err != nil {
+				stored.LastError = err.Error()
+			} else {
+				stored.Links, stored.LastError = links, ""
+			}
+		}
+		p.mu.Unlock()
+		fetched = true
+		if p.log != nil {
+			if err != nil {
+				p.log("upstream: new source %s unreadable: %v", source.ID, err)
+			} else {
+				p.log("upstream: new source %s read, %d links", source.ID, len(links))
+			}
+		}
+	}
+	if fetched {
+		_ = p.persist()
 	}
 }
 
