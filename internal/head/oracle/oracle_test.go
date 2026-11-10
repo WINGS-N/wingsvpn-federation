@@ -194,6 +194,25 @@ func TestOneSignalDoesNotQuarantine(t *testing.T) {
 }
 
 // Повторение обязано топить: разовая случайность прощается, привычка нет
+// Зациклившийся клиент повторяет один и тот же отказ сотнями раз за сутки.
+// Это одна беда, а не триста нарушений, и в карантин за неё уезжать не за что
+func TestRetryStormDoesNotQuarantine(t *testing.T) {
+	scorer := NewRulesScorer()
+	now := time.Now()
+	var signals []Signal
+	for i := 0; i < 370; i++ {
+		signals = append(signals, Signal{
+			ClientID: "user-1",
+			Kind:     fedpb.AbuseKind_ABUSE_KIND_NO_DEVICE_ID,
+			Count:    1,
+			Observed: now.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+	if got := scorer.Score("user-1", signals, now); got.Band == BandQuarantine {
+		t.Fatalf("триста семьдесят повторов одного отказа утопили доверие: %d", got.Confidence)
+	}
+}
+
 func TestRepeatedSignalsSinkTheScore(t *testing.T) {
 	scorer := NewRulesScorer()
 	now := time.Now()

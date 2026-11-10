@@ -172,6 +172,7 @@ func (r *RulesScorer) Name() string { return "rules-v1" }
 // Score folds the signals into a confidence
 func (r *RulesScorer) Score(clientID string, signals []Signal, now time.Time) Verdict {
 	buckets := make(map[fedpb.AbuseKind]float64)
+	caps := make(map[fedpb.AbuseKind]float64)
 	for _, s := range signals {
 		age := now.Sub(s.Observed)
 		if age < 0 {
@@ -188,6 +189,19 @@ func (r *RulesScorer) Score(clientID string, signals []Signal, now time.Time) Ve
 			weight = r.Weights[s.Kind]
 		}
 		buckets[s.Kind] += weight * magnitude(s.Count) * decay
+		if single := weight * magnitude(s.Count); single > caps[s.Kind] {
+			caps[s.Kind] = single
+		}
+	}
+	// Потолок на класс. Без него ведро только называется ведром: клиент,
+	// зациклившийся на ретраях, за сутки копит сотни одинаковых сигналов и
+	// уезжает в карантин на полтора месяца, ничего не нарушив. Повтор при этом
+	// обязан что-то значить, поэтому потолок не рубит под корень, а разрешает
+	// удвоить самое тяжёлое срабатывание класса
+	for kind, v := range buckets {
+		if ceiling := caps[kind] * repeatCeiling; ceiling > 0 && v > ceiling {
+			buckets[kind] = ceiling
+		}
 	}
 	penalty := 0.0
 	for _, v := range buckets {
@@ -216,6 +230,14 @@ func (r *RulesScorer) Score(clientID string, signals []Signal, now time.Time) Ve
 // гео-разброса сотни километров, и линейное умножение отправляло человека в
 // карантин с ОДНОГО срабатывания. Один сигнал обязан лишь двигать доверие, а
 // топит пусть повторяемость, у которой своё слагаемое в сумме
+// maxMagnitude - потолок множителя из magnitude
+const maxMagnitude = 2.5
+
+// repeatCeiling - во сколько раз повторы могут усилить класс. Три: четырёх
+// находок малвари хватает на карантин, а триста ретраев одного и того же
+// отказа не доводят даже до него
+const repeatCeiling = 3.0
+
 func magnitude(count uint32) float64 {
 	switch {
 	case count <= 1:
@@ -227,7 +249,7 @@ func magnitude(count uint32) float64 {
 	case count <= 20:
 		return 2
 	default:
-		return 2.5
+		return maxMagnitude
 	}
 }
 
