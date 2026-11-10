@@ -141,6 +141,17 @@ type Rule struct {
 }
 
 // Matches проверяет домен по одному правилу
+// MatchesKeyword - совпало ли по слову внутри имени. Такое имя не бывает
+// случайным, поэтому повтора от него не требуют
+func (r Rule) MatchesKeyword(domain string) bool {
+	for _, word := range r.Keyword {
+		if strings.Contains(domain, word) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r Rule) Matches(domain string) bool {
 	for _, exact := range r.Exact {
 		if domain == exact {
@@ -204,12 +215,14 @@ func DefaultRules() []Rule {
 	}
 }
 
-// feedMinHits - сколько раз надо сходить, чтобы чужой список стал обвинением.
+// minHits - сколько раз надо сходить, чтобы домен стал обвинением.
 //
 // Одно обращение это перешедшая ссылка, реклама в приложении или сосед по CDN,
 // а не поведение. Списки к тому же ошибаются: под раздачу попадал внутренний
-// API вконтакте, через который ходит наш же VK TURN
-const feedMinHits = 3
+// API вконтакте, через который ходит наш же VK TURN. Свои правила врут не реже
+// чужих: под "площадку массовой рассылки" попадает почтовик, который клиент
+// опросил один раз, подбирая настройки
+const minHits = 3
 
 // Verdict - что разбор надумал по одному субъекту
 type Verdict struct {
@@ -254,13 +267,20 @@ func ClassifyWithFeed(rules []Rule, feed Feed, sightings []Sighting) []Verdict {
 		if IsSystemNoise(domain) {
 			continue
 		}
-		if feed != nil && s.Count >= feedMinHits {
+		enough := s.Count >= minHits
+		if feed != nil && enough {
 			if kind, listed := feed.Kind(domain); listed {
 				add(s.SubjectID, kind, s.Count, domain)
 			}
 		}
 		for _, rule := range rules {
 			if !rule.Matches(domain) {
+				continue
+			}
+			// Имя вроде cvvshop само себе улика, и ждать повтора незачем. А
+			// площадка рассылки или трекер живут и мирной жизнью: один заход
+			// туда это ссылка или подбор настроек, а не поведение
+			if !enough && !rule.MatchesKeyword(domain) {
 				continue
 			}
 			add(s.SubjectID, rule.Kind, s.Count, domain)

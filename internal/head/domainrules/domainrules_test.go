@@ -62,6 +62,28 @@ func TestBeaconLeavesStreamingAlone(t *testing.T) {
 	}
 }
 
+// Почтовый клиент перебирает настройки и дёргает каждый сервер по разу. Это
+// подбор, а не рассылка, и обвинять за него нельзя
+func TestSingleHitOnALegitimateDomainIsNotAbuse(t *testing.T) {
+	got := Classify(DefaultRules(), []Sighting{
+		{SubjectID: "user-1", Domain: "smtp.sendgrid.net", Count: 1},
+		{SubjectID: "user-1", Domain: "rutracker.org", Count: 1},
+	})
+	if len(got) != 0 {
+		t.Fatalf("одно обращение стало обвинением: %+v", got)
+	}
+}
+
+// А имя, в котором сидит cvvshop, случайным не бывает: тут повтора не ждём
+func TestNamedFraudNeedsNoRepeat(t *testing.T) {
+	got := Classify(DefaultRules(), []Sighting{
+		{SubjectID: "user-1", Domain: "best-cvvshop.example", Count: 1},
+	})
+	if len(got) != 1 || got[0].Kind != fedpb.AbuseKind_ABUSE_KIND_MALWARE {
+		t.Fatalf("кардинг-шоп прошёл мимо: %+v", got)
+	}
+}
+
 func TestClassifyFindsListedDomains(t *testing.T) {
 	got := Classify(DefaultRules(), []Sighting{
 		{SubjectID: "user-1", Domain: "rutracker.org", Count: 4},
