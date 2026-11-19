@@ -22,6 +22,7 @@ IMAGE="${WINGSV_IMAGE:-ghcr.io/wings-n/wingsvpn-federation:latest}"
 BIN_DIR=/usr/local/wings/federation/bin
 CONFIG_DIR=/etc/wings/federation
 STATE_DIR=/var/lib/wings/federation
+RUNTIME_BIN_DIR=$STATE_DIR/bin
 LOG_DIR=/var/log/wings/federation
 
 die() {
@@ -96,7 +97,7 @@ if [ "$KERNEL_MAJOR" -lt 5 ] || { [ "$KERNEL_MAJOR" -eq 5 ] && [ "$KERNEL_MINOR"
   die "kernel $(uname -r) is older than 5.6, which the tunnel needs"
 fi
 
-mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
+mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$RUNTIME_BIN_DIR" "$LOG_DIR"
 chmod 700 "$CONFIG_DIR" "$STATE_DIR"
 
 case "$RELEASE" in
@@ -137,7 +138,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$BIN_DIR/wingsv-fed agent -state $CONFIG_DIR/node.toml -bin-dir $BIN_DIR -config-dir $CONFIG_DIR -state-dir $STATE_DIR
+ExecStart=$BIN_DIR/wingsv-fed agent -state $CONFIG_DIR/node.toml -bin-dir $RUNTIME_BIN_DIR -config-dir $CONFIG_DIR -state-dir $STATE_DIR
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
