@@ -259,12 +259,12 @@ func (s *Server) GetPublicCounters(_ context.Context, _ *headpb.PublicCountersRe
 // dial and no new authentication
 func (s *Server) StreamLive(stream headpb.FederationHead_StreamLiveServer) error {
 	subs := make(chan *headpb.LiveSubscribe, 1)
-	errs := make(chan error, 1)
+	recvDone := make(chan struct{})
 	go func() {
 		for {
 			req, err := stream.Recv()
 			if err != nil {
-				errs <- err
+				close(recvDone)
 				return
 			}
 			// Only the newest subscription matters, so an unread one is dropped
@@ -284,7 +284,7 @@ func (s *Server) StreamLive(stream headpb.FederationHead_StreamLiveServer) error
 		select {
 		case <-stream.Context().Done():
 			return nil
-		case <-errs:
+		case <-recvDone:
 			return nil
 		case req := <-subs:
 			current = req

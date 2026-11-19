@@ -640,12 +640,12 @@ func (s *Server) ProbeSession(stream fedpb.Federation_ProbeSessionServer) error 
 	wake := s.addProbeWake()
 	defer s.dropProbeWake(wake)
 	frames := make(chan *fedpb.ProbeFrame)
-	errs := make(chan error, 1)
+	recvDone := make(chan struct{})
 	go func() {
 		for {
 			frame, err := stream.Recv()
 			if err != nil {
-				errs <- err
+				close(recvDone)
 				return
 			}
 			frames <- frame
@@ -656,7 +656,7 @@ func (s *Server) ProbeSession(stream fedpb.Federation_ProbeSessionServer) error 
 		select {
 		case <-stream.Context().Done():
 			return nil
-		case <-errs:
+		case <-recvDone:
 			if probeID != "" {
 				log.Printf("fedserver: probe %s offline", probeID)
 			}
