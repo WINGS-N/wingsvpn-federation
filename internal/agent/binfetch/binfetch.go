@@ -188,8 +188,21 @@ func (c *Client) install(name string, body []byte) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(c.BinDir, name)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o755); err != nil {
+	file, err := os.CreateTemp(c.BinDir, name+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmp := file.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	_, writeErr := file.Write(body)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
 		return "", err
 	}
 	if err := os.Rename(tmp, path); err != nil {

@@ -35,6 +35,7 @@ Usage:
   wingsv-fed donate  [flags]   pay into the treasury through the program, cut included
   wingsv-fed train   [flags]   train the oracle model on what the head collected
   wingsv-fed doctor            print what this machine looks like to the head
+  wingsv-fed update            install the latest standalone release
   wingsv-fed version
 
 `)
@@ -71,6 +72,8 @@ func main() {
 		runTrain(os.Args[2:])
 	case "doctor":
 		err = runDoctor(os.Args[2:])
+	case "update":
+		err = runUpdate(os.Args[2:])
 	case "version":
 		fmt.Println(resolveVersion())
 	case "-h", "--help", "help":
