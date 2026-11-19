@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -376,7 +377,10 @@ func (a *Allocator) ensureFleet(userID string) (*Allocation, error) {
 		return alloc, nil
 	}
 
-	picked := assign.Pick(a.reg.List(), now, a.opts, assign.Request{
+	nodes := slices.DeleteFunc(a.reg.List(), func(n *registry.Node) bool {
+		return n.RealityPublicKey == ""
+	})
+	picked := assign.Pick(nodes, now, a.opts, assign.Request{
 		Want:   want,
 		Sticky: current,
 	})
@@ -684,7 +688,7 @@ func (a *Allocator) allStillServing(nodeIDs []string, now time.Time) bool {
 		if err != nil {
 			return false
 		}
-		if n.State != fedpb.RotationState_ROTATION_STATE_ACTIVE {
+		if n.State != fedpb.RotationState_ROTATION_STATE_ACTIVE || n.RealityPublicKey == "" {
 			return false
 		}
 		if !assign.ScoreNode(n, now, a.opts).Fresh {

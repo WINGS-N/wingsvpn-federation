@@ -204,6 +204,38 @@ func TestNoCapacityIsReported(t *testing.T) {
 	}
 }
 
+func TestAllocationReplacesAStickyNodeWithoutRealityIdentity(t *testing.T) {
+	firstNode := node("n1", 1)
+	a, reg, _ := setup(t, firstNode)
+	a.SetBandFor(func(string) int { return 1 })
+	first, err := a.Ensure("user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !at.Before(first.StickyUntil) {
+		t.Fatal("expected an active sticky assignment")
+	}
+
+	unready := *firstNode
+	unready.RealityPublicKey = ""
+	reg.Add(&unready)
+	reg.Add(node("n2", 2))
+
+	for _, userID := range []string{"user-1", "user-2"} {
+		alloc, err := a.EnsureDevice(userID, "phone")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := alloc.NodeIDs(); !sameSet(got, []string{"n2"}) {
+			t.Fatalf("%s nodes = %v, want [n2]", userID, got)
+		}
+		links, err := a.Links(userID, "phone", "WINGS V")
+		if err != nil || len(links) == 0 {
+			t.Fatalf("%s got no links: %v", userID, err)
+		}
+	}
+}
+
 // A momentary shortage must not cut off a user who is already served
 func TestAServedUserIsKeptWhenTheFleetIsMomentarilyEmpty(t *testing.T) {
 	n1, n2 := node("n1", 1), node("n2", 2)
