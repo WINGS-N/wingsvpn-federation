@@ -326,6 +326,25 @@ func (a *Allocator) Get(userID string) (*Allocation, bool) {
 // nothing, so the existing nodes are kept while they remain eligible and only
 // the gaps are filled
 func (a *Allocator) Ensure(userID string) (*Allocation, error) {
+	alloc, err := a.ensureFleet(userID)
+	if !errors.Is(err, ErrNoCapacity) || len(a.upstreamLinks(userID)) == 0 {
+		return alloc, err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	alloc = a.state[userID]
+	if alloc == nil {
+		return nil, ErrNoCapacity
+	}
+	if a.wantFor(userID) <= 0 {
+		return nil, ErrQuarantined
+	}
+	a.persistLocked()
+	return alloc, nil
+}
+
+func (a *Allocator) ensureFleet(userID string) (*Allocation, error) {
 	// Скорости спрашиваем ДО лока: считает их чужой код, и он ходит обратно в
 	// аллокатор за расходом. Под локом это ожидание самого себя навсегда
 	up, down := a.speedsFor(userID)

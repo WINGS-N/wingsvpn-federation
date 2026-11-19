@@ -11,6 +11,7 @@ import (
 	fedpb "wingsnet.org/federation/gen/fedpb"
 	"wingsnet.org/federation/internal/head/assign"
 	"wingsnet.org/federation/internal/head/registry"
+	"wingsnet.org/federation/internal/head/upstream"
 )
 
 var at = time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
@@ -581,5 +582,34 @@ func TestSpeedHookMayReadTheAllocatorBack(t *testing.T) {
 	case <-waiting:
 	case <-time.After(5 * time.Second):
 		t.Fatal("лок остался захваченным после выдачи")
+	}
+}
+
+type fixedUpstreams map[string][]upstream.Link
+
+func (f fixedUpstreams) For(userID string) []upstream.Link { return f[userID] }
+
+func TestPurchasedSubscriptionWorksWithoutFederationNodes(t *testing.T) {
+	a, _, _ := setup(t)
+	const link = "vless://a@1.2.3.4:443#purchased"
+	a.SetUpstreams(fixedUpstreams{"user-1": {{Raw: link}}})
+
+	first, err := a.Ensure("user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SubToken == "" || len(first.NodeIDs()) != 0 {
+		t.Fatalf("unexpected allocation: %+v", first)
+	}
+	alloc, ok := a.ByToken(first.SubToken)
+	if !ok || alloc.UserID != "user-1" {
+		t.Fatal("subscription token did not resolve to its owner")
+	}
+	if _, err := a.EnsureDevice(alloc.UserID, "phone"); err != nil {
+		t.Fatal(err)
+	}
+	links, err := a.Links(alloc.UserID, "phone", "WINGS V")
+	if err != nil || len(links) != 1 || links[0] != link {
+		t.Fatalf("links = %v, err = %v", links, err)
 	}
 }
